@@ -243,7 +243,9 @@ jobs:
           name: Release ${{ needs.check-upstream.outputs.new_version }}
           body: |
             New version synced from upstream ComfyUI.
-            Docker image: docker pull ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
+            Docker image:
+            - docker pull ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
+            - docker pull ${{ env.IMAGE_NAME }}:latest
           draft: false
           prerelease: false
 
