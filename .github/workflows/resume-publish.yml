@@ -101,7 +101,7 @@ jobs:
           tag_name: ${{ steps.resolve.outputs.tag }}
           name: Release ${{ steps.resolve.outputs.tag }}
           body: |
-            Resumed publish for tag ${{ steps.resolve.outputs.tag }}.
+            New version synced from upstream ComfyUI.
             Docker image:
             - docker pull ${{ env.IMAGE_NAME }}:${{ steps.resolve.outputs.tag }}
             - docker pull ${{ env.IMAGE_NAME }}:latest
