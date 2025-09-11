@@ -61,7 +61,7 @@ PY
 )
   for d in "${PY_PATHS[@]}"; do
     case "$d" in
-      /usr/local/*)
+      /usr/local|/usr/local/*)
         mkdir -p "$d" || true
         chown -R "${APP_USER}:${APP_GROUP}" "$d" || true
         chmod -R u+rwX,g+rwX "$d" || true
