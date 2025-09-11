@@ -166,7 +166,7 @@ jobs:
           tag_name: ${{ needs.check-tag.outputs.current_tag }}
           name: Release ${{ needs.check-tag.outputs.current_tag }}
           body: |
-            Rebuilt image for tag ${{ needs.check-tag.outputs.current_tag }}.
+            New version synced from upstream ComfyUI.
             Docker image:
             - docker pull ${{ env.IMAGE_NAME }}:${{ needs.check-tag.outputs.current_tag }}
             - docker pull ${{ env.IMAGE_NAME }}:latest
