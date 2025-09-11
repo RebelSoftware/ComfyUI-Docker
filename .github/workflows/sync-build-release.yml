@@ -130,6 +130,8 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
+          provenance: false
+          sbom: false
           tags: |
             ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
             ${{ env.IMAGE_NAME }}:latest
@@ -205,6 +207,8 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
+          provenance: false
+          sbom: false
           tags: |
             ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
             ${{ env.IMAGE_NAME }}:latest
