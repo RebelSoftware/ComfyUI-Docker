@@ -1,4 +1,5 @@
 name: Sync Fork and Build Docker Image on Upstream Release
+
 on:
   schedule:
     - cron: '0 0 * * *'
@@ -22,6 +23,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
       - name: Install prerequisites (jq, curl, git)
         run: |
           set -e
@@ -29,6 +31,7 @@ jobs:
             sudo apt-get update -y
             sudo apt-get install -y jq curl git
           fi
+
       - name: Check for New Upstream Release
         id: check_version
         shell: bash
@@ -41,6 +44,7 @@ jobs:
           else
             echo "new_version=none" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Cleanup workspace (always, scoped)
         if: ${{ always() }}
         run: |
@@ -61,10 +65,12 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
       - name: Set Git Config
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
+
       - name: Sync with Upstream (idempotent)
         run: |
           set -euo pipefail
@@ -81,10 +87,12 @@ jobs:
           git add README.md
           git commit -m "Merge upstream/master, keep local README.md" || true
           git push origin master
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           cleanup: true
+
       - name: Check CR_PAT secret
         id: crpat
         shell: bash
@@ -94,6 +102,7 @@ jobs:
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Login to GHCR with GITHUB_TOKEN
         if: ${{ steps.crpat.outputs.present == 'false' }}
         uses: docker/login-action@v3
@@ -101,6 +110,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Login to GHCR with CR_PAT
         if: ${{ steps.crpat.outputs.present == 'true' }}
         uses: docker/login-action@v3
@@ -108,6 +118,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.CR_PAT }}
+
       - name: Free disk space (best effort)
         continue-on-error: true
         run: |
@@ -115,6 +126,7 @@ jobs:
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+
       - name: Build and Push (GH runner)
         id: build
         uses: docker/build-push-action@v6
@@ -128,6 +140,7 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
             ${{ env.IMAGE_NAME }}:latest
+
       - name: Mark build success
         id: mark
         if: ${{ success() && steps.build.outputs.digest != '' }}
@@ -146,10 +159,12 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
       - name: Set Git Config
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
+
       - name: Sync with Upstream (idempotent)
         run: |
           set -euo pipefail
@@ -166,10 +181,12 @@ jobs:
           git add README.md
           git commit -m "Merge upstream/master, keep local README.md" || true
           git push origin master
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           cleanup: true
+
       - name: Check CR_PAT secret
         id: crpat
         shell: bash
@@ -179,6 +196,7 @@ jobs:
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Login to GHCR with GITHUB_TOKEN
         if: ${{ steps.crpat.outputs.present == 'false' }}
         uses: docker/login-action@v3
@@ -186,6 +204,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Login to GHCR with CR_PAT
         if: ${{ steps.crpat.outputs.present == 'true' }}
         uses: docker/login-action@v3
@@ -193,6 +212,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.CR_PAT }}
+
       - name: Build and Push (self-hosted)
         id: build
         uses: docker/build-push-action@v6
@@ -206,16 +226,19 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
             ${{ env.IMAGE_NAME }}:latest
+
       - name: Mark build success
         id: mark
         if: ${{ success() && steps.build.outputs.digest != '' }}
         run: echo "built=true" >> "$GITHUB_OUTPUT"
+
       - name: Remove BuildKit image (moby/buildkit)
         if: ${{ always() }}
         shell: bash
         run: |
           set -euxo pipefail
           docker image rm -f $(docker images 'moby/buildkit*' -q) 2>/dev/null || true
+
       - name: Cleanup (always, scoped)
         if: ${{ always() }}
         run: |
@@ -243,3 +266,23 @@ jobs:
             - docker pull ${{ env.IMAGE_NAME }}:latest
           draft: false
           prerelease: false
+
+  finalize:
+    name: Finalize Outcome
+    needs: [check-upstream, build-gh, build-self, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: No upstream release -> success
+        if: ${{ needs.check-upstream.outputs.new_version == 'none' }}
+        run: echo "No upstream release; run is successful."
+
+      - name: Published -> success
+        if: ${{ needs.check-upstream.outputs.new_version != 'none' && needs.publish.result == 'success' }}
+        run: echo "Image built and release published; run is successful."
+
+      - name: Fail if not published (both build paths failed or publish failed)
+        if: ${{ needs.check-upstream.outputs.new_version != 'none' && needs.publish.result != 'success' }}
+        run: |
+          echo "New upstream version detected, but no successful publish."
+          exit 1
