@@ -32,25 +32,41 @@ jobs:
             sudo apt-get install -y jq curl git
           fi
 
-      - name: Check for New Upstream Release
+      - name: Check for New Upstream Release (release-gated + file match)
         id: check_version
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          LATEST_TAG=$(curl -s https://api.github.com/repos/comfyanonymous/ComfyUI/releases/latest | jq -r .tag_name)
-          CURRENT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
-          if [ "$LATEST_TAG" != "$CURRENT_TAG" ]; then
-            echo "new_version=$LATEST_TAG" >> "$GITHUB_OUTPUT"
-          else
-            echo "new_version=none" >> "$GITHUB_OUTPUT"
+      
+          # 1) Upstream latest release tag (e.g., v0.3.59)
+          LATEST_TAG=$(gh api repos/comfyanonymous/ComfyUI/releases/latest --jq .tag_name)
+      
+          # 2) Parse upstream comfyui_version.py from the current upstream default branch
+          git remote add upstream https://github.com/comfyanonymous/ComfyUI.git 2>/dev/null || git remote set-url upstream https://github.com/comfyanonymous/ComfyUI.git
+          git fetch upstream --depth=1
+          FILE_VER=$(git show upstream/master:comfyui_version.py | sed -n 's/^__version__ = "\(.*\)"/\1/p' | tr -d '\r')
+      
+          # Normalize release tag to bare version (strip leading 'v')
+          LATEST_VER="${LATEST_TAG#v}"
+      
+          # 3) Only consider it "new" if the release tag matches the version file (avoid early bumps)
+          CANDIDATE="none"
+          if [ -n "${LATEST_TAG}" ] && [ "${LATEST_TAG}" != "null" ] && [ -n "${FILE_VER}" ] && [ "${FILE_VER}" = "${LATEST_VER}" ]; then
+            CANDIDATE="${LATEST_TAG}"
           fi
-
-      - name: Cleanup workspace (always, scoped)
-        if: ${{ always() }}
-        run: |
-          set -euxo pipefail
-          rm -rf "${GITHUB_WORKSPACE:?}/"* "${GITHUB_WORKSPACE:?}/."[!.]* 2>/dev/null || true
-
+      
+          # 4) Skip if this repo already has a release at that tag
+          if [ "${CANDIDATE}" != "none" ]; then
+            SELF_TAG=$(gh api repos/${GITHUB_REPOSITORY}/releases/latest --jq .tag_name 2>/dev/null || echo "none")
+            if [ "${SELF_TAG}" = "${CANDIDATE}" ]; then
+              CANDIDATE="none"
+            fi
+          fi
+      
+          echo "new_version=${CANDIDATE}" >> "$GITHUB_OUTPUT"
+          
   build-gh:
     name: Build on GitHub Runner (primary)
     needs: check-upstream
