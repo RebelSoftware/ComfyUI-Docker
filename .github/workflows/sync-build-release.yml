@@ -66,7 +66,13 @@ jobs:
           fi
       
           echo "new_version=${CANDIDATE}" >> "$GITHUB_OUTPUT"
-          
+
+      - name: Cleanup workspace (always, scoped)
+        if: ${{ always() }}
+        run: |
+          set -euxo pipefail
+          rm -rf "${GITHUB_WORKSPACE:?}/"* "${GITHUB_WORKSPACE:?}/."[!.]* 2>/dev/null || true
+  
   build-gh:
     name: Build on GitHub Runner (primary)
     needs: check-upstream
