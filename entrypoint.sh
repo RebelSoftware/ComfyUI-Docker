@@ -51,6 +51,27 @@ if d:
 log("Finished emitting target directories")
 PY
 )
+ # Echo helper
+  run() {
+    printf '+ '
+    printf '%q ' "$@"
+    printf '\n'
+    "$@"
+  }
+  
+  for d in "${PY_PATHS[@]}"; do
+    case "$d" in
+      /usr/local|/usr/local/*)
+        run mkdir -p "$d" || true
+        run chown -R "${APP_USER}:${APP_GROUP}" "$d" || true
+        run chmod -R u+rwX,g+rwX "$d" || true
+        ;;
+      *)
+        :
+        ;;
+    esac
+  done
+
   for d in "${PY_PATHS[@]}"; do
     case "$d" in
       /usr/local|/usr/local/*)
