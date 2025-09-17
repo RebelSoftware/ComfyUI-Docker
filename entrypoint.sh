@@ -79,7 +79,7 @@ fi
 
 # User-site PATHs for --user installs (custom nodes)
 export PATH="$HOME/.local/bin:$PATH"
-pyver="$(python -c 'import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")')"
+pyver="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 export PYTHONPATH="$HOME/.local/lib/python${pyver}/site-packages:${PYTHONPATH:-}"
 
 # Auto-install custom node deps
