@@ -26,13 +26,11 @@ This repository automates the creation of Docker images for [ComfyUI](https://gi
 
 I created this repo for myself as a simple way to stay up to date with the latest ComfyUI versions while having an easy-to-use Docker image. It's particularly suited for setups with **NVIDIA GPUs**, leveraging CUDA for accelerated performance.
 
-Why Docker? It provides a consistent, isolated environment that's easy to deploy, update, and scale, perfect for AI workflows without messing with your host system.
-
 ### Built With
 - [Docker](https://www.docker.com/)
 - [GitHub Actions](https://github.com/features/actions) for automation
 - [PyTorch](https://pytorch.org/) with CUDA support
-- Based on Python 3.13 slim image
+- Based on Python 3.12 slim image
 
 ---
 
@@ -41,8 +39,6 @@ Why Docker? It provides a consistent, isolated environment that's easy to deploy
 - **NVIDIA GPU Ready**: Pre-configured with CUDA-enabled PyTorch for seamless GPU acceleration.
 - **Non-Root Runtime**: Runs as a non-root user for better security.
 - **Pre-Installed Manager**: Includes ComfyUI-Manager for easy node/extensions management.
-- **Lightweight**: Uses a slim Python base image to keep the size down.
-- **Customizable**: Pass environment varibles with `COMFYUI_` in docker-compose.
 
 ---
 
@@ -81,7 +77,6 @@ services:
       - TZ=America/Edmonton
       - PUID=1000
       - GUID=1000
-      #- COMFYUI_SOME_ENV_VAR=SOME_VALUE
     deploy:
       resources:
         reservations:
@@ -108,7 +103,6 @@ Access ComfyUI at `http://localhost:8188` after starting the container using Doc
 
 ### Environment Variables
 - Set via `.env` file or `-e` flags in `docker compose` or `docker run`.
-- Examples: `COMFYUI_EXTRA_ARGS="--highvram"` to pass extra args.
 
 ---
 
