@@ -1,5 +1,5 @@
 # Use a recent slim base image
-FROM python:3.13.7-slim-trixie
+FROM python:3.12.11-slim-trixie
 
 # Environment
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -12,6 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential \
+    cmake \
     libgl1 \
     libglx-mesa0 \
     libglib2.0-0 \
