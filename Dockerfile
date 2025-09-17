@@ -25,15 +25,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd --gid 1000 appuser \
  && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash appuser
 
-# Workdir (created automatically if missing)
+# Workdir
 WORKDIR /app/ComfyUI
 
 # Leverage layer caching: install deps before copying full tree
 COPY requirements.txt ./
+
+# Core Python deps (torch CUDA 12.9, ComfyUI reqs), media/NVML libs
 RUN python -m pip install --upgrade pip setuptools wheel \
  && python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129 \
  && python -m pip install -r requirements.txt \
- && python -m pip install imageio-ffmpeg
+ && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py
 
 # Copy the application
 COPY . .
