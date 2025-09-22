@@ -118,23 +118,23 @@ install_triton_version() {
     case "$SAGE_STRATEGY" in
         "mixed_with_rtx20"|"rtx20_only")
             log "Installing Triton 3.2.0 for RTX 20 series compatibility"
-            python -m pip install --force-reinstall "triton==3.2.0" || {
+            python -m pip install --user --force-reinstall "triton==3.2.0" || {
                 log "WARNING: Failed to install specific Triton version, using default"
-                python -m pip install --force-reinstall triton || true
+                python -m pip install --user --force-reinstall triton || true
             }
             ;;
         "rtx50_capable")
             log "Installing latest Triton for RTX 50 series"
             # Try latest first, fallback to pre-release if needed
-            python -m pip install --force-reinstall triton || \
-            python -m pip install --force-reinstall --pre triton || {
+            python -m pip install --user --force-reinstall triton || \
+            python -m pip install --user --force-reinstall --pre triton || {
                 log "WARNING: Failed to install latest Triton, using stable"
-                python -m pip install --force-reinstall "triton>=3.2.0" || true
+                python -m pip install --user --force-reinstall "triton>=3.2.0" || true
             }
             ;;
         *)
             log "Installing latest stable Triton"
-            python -m pip install --force-reinstall triton || {
+            python -m pip install --user --force-reinstall triton || {
                 log "WARNING: Triton installation failed, continuing without"
                 return 1
             }
@@ -192,9 +192,9 @@ build_sage_attention_mixed() {
             ;;
     esac
     
-    # Build with architecture-specific flags
+    # Build with architecture-specific flags using --user installation
     log "Building Sage Attention with multi-GPU support..."
-    if MAX_JOBS=$(nproc) python setup.py install; then
+    if MAX_JOBS=$(nproc) python -m pip install --user --no-build-isolation .; then
         # Create strategy-specific built flag
         echo "$SAGE_STRATEGY" > "$SAGE_ATTENTION_BUILT_FLAG"
         log "Sage Attention built successfully for strategy: $SAGE_STRATEGY"
