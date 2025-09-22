@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     gnupg2 \
     ca-certificates \
+    ninja-build \
  && echo "deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list.d/non-free.list \
  && wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb \
  && dpkg -i cuda-keyring_1.1-1_all.deb \
@@ -34,6 +35,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && apt-get install -y --no-install-recommends \
     cuda-nvcc-12-9 \
     cuda-cudart-dev-12-9 \
+    libcusparse-dev-12-9 \
+    libcublas-dev-12-9 \
+    libcurand-dev-12-9 \
+    libcusolver-dev-12-9 \
+    libcufft-dev-12-9 \
     nvidia-smi \
  && rm -rf /var/lib/apt/lists/* \
  && rm cuda-keyring_1.1-1_all.deb
