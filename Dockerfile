@@ -33,9 +33,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
  && rm -rf /var/lib/apt/lists/*
 
-# Create runtime user/group
-RUN groupadd --gid 1000 appuser \
- && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash appuser
+# Create runtime user/group (handle existing GID/UID gracefully)
+RUN (groupadd --gid 1000 appuser 2>/dev/null || true) \
+ && (useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash appuser 2>/dev/null || true) \
+ && mkdir -p /home/appuser \
+ && chown -R 1000:1000 /home/appuser
 
 # Workdir
 WORKDIR /app/ComfyUI
