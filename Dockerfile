@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg2 \
     ca-certificates \
     ninja-build \
+    patch \
  && echo "deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list.d/non-free.list \
  && wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb \
  && dpkg -i cuda-keyring_1.1-1_all.deb \
@@ -43,6 +44,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nvidia-smi \
  && rm -rf /var/lib/apt/lists/* \
  && rm cuda-keyring_1.1-1_all.deb
+
+# Patch CUDA math_functions.h for glibc 2.41 compatibility
+RUN sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x) noexcept (true);/' /usr/local/cuda-12.9/include/crt/math_functions.h && \
+    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x) noexcept (true);/' /usr/local/cuda-12.9/include/crt/math_functions.h && \
+    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x) noexcept (true);/' /usr/local/cuda-12.9/include/crt/math_functions.h && \
+    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x) noexcept (true);/' /usr/local/cuda-12.9/include/crt/math_functions.h
 
 # Set CUDA paths for entrypoint compilation
 ENV CUDA_HOME=/usr/local/cuda-12.9 \
