@@ -1,5 +1,5 @@
-# Use NVIDIA CUDA 12.9 devel image for maximum GPU compatibility (RTX 20-50 series)
-FROM nvidia/cuda:12.9.0-devel-ubuntu24.04
+# Use a recent slim base image
+FROM python:3.12.11-slim-trixie
 
 # Environment
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -13,12 +13,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MAX_JOBS=32 \
     SAGE_ATTENTION_AVAILABLE=0
 
-# System deps including Python 3.12
+# System deps + minimal CUDA toolkit for building
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.12 \
-    python3.12-dev \
-    python3.12-venv \
-    python3-pip \
     git \
     build-essential \
     cmake \
@@ -29,28 +25,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fontconfig \
     util-linux \
     wget \
-    curl \
- && ln -sf /usr/bin/python3.12 /usr/bin/python \
- && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
- && rm -rf /var/lib/apt/lists/*
+    gnupg2 \
+    ca-certificates \
+ && wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb \
+ && dpkg -i cuda-keyring_1.1-1_all.deb \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
+    cuda-nvcc-12-9 \
+    cuda-cudart-dev-12-9 \
+    nvidia-utils-545 \
+ && rm -rf /var/lib/apt/lists/* \
+ && rm cuda-keyring_1.1-1_all.deb
 
-# Create runtime user/group with proper error handling
+# Set CUDA paths for entrypoint compilation
+ENV CUDA_HOME=/usr/local/cuda-12.9 \
+    PATH=/usr/local/cuda-12.9/bin:${PATH} \
+    LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:${LD_LIBRARY_PATH}
+
+# Create symlink for compatibility
+RUN ln -sf /usr/local/cuda-12.9 /usr/local/cuda
+
+# Create runtime user/group (fix the original issue)
 RUN set -e; \
-    # Handle existing GID 1000
     if getent group 1000 >/dev/null 2>&1; then \
         EXISTING_GROUP=$(getent group 1000 | cut -d: -f1); \
         echo "GID 1000 exists as group: $EXISTING_GROUP"; \
         if [ "$EXISTING_GROUP" != "appuser" ]; then \
             groupadd appuser; \
-            APP_GID=$(getent group appuser | cut -d: -f3); \
-        else \
-            APP_GID=1000; \
         fi; \
     else \
         groupadd --gid 1000 appuser; \
-        APP_GID=1000; \
     fi; \
-    # Handle existing UID 1000
     if getent passwd 1000 >/dev/null 2>&1; then \
         EXISTING_USER=$(getent passwd 1000 | cut -d: -f1); \
         echo "UID 1000 exists as user: $EXISTING_USER"; \
@@ -60,33 +65,25 @@ RUN set -e; \
     else \
         useradd --uid 1000 --gid appuser --create-home --shell /bin/bash appuser; \
     fi; \
-    # Ensure home directory exists with correct ownership
     mkdir -p /home/appuser; \
-    chown appuser:appuser /home/appuser; \
-    echo "Created user: $(id appuser)"; \
-    echo "Created group: $(getent group appuser)"
+    chown appuser:appuser /home/appuser
 
 # Workdir
 WORKDIR /app/ComfyUI
 
-# Copy requirements.txt with optional handling
+# Leverage layer caching: install deps before copying full tree
 COPY requirements.txt* ./
 
 # Core Python deps (torch CUDA 12.9, ComfyUI reqs), media/NVML libs
 RUN python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129 \
  && python -m pip install triton \
- && if [ -f requirements.txt ]; then \
-        echo "Installing from requirements.txt"; \
-        python -m pip install -r requirements.txt; \
-    else \
-        echo "No requirements.txt found, skipping"; \
-    fi \
+ && if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi \
  && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py
 
 # Copy the application
 COPY . .
 
-# Entrypoint with proper ownership
+# Entrypoint
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
  && chown appuser:appuser /app /home/appuser /entrypoint.sh
@@ -96,6 +93,4 @@ EXPOSE 8188
 # Start as root so entrypoint can adjust ownership and drop privileges
 USER root
 ENTRYPOINT ["/entrypoint.sh"]
-
-# Default command - entrypoint will add --use-sage-attention if available
 CMD ["python", "main.py", "--listen", "0.0.0.0"]
