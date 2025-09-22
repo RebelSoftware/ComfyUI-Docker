@@ -7,19 +7,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
-# Enable contrib/non-free/non-free-firmware, install CUDA toolkit + build deps
+# Write explicit Debian sources with contrib/non-free/non-free-firmware, then install CUDA toolkit + build deps
 RUN set -eux; \
-  sed -i 's/ main$/ main contrib non-free non-free-firmware/g' /etc/apt/sources.list; \
+  printf 'deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware\n' > /etc/apt/sources.list; \
+  printf 'deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware\n' >> /etc/apt/sources.list; \
+  printf 'deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware\n' >> /etc/apt/sources.list; \
   apt-get update; \
-  apt-get install -y --no-install-recommends \
-    ca-certificates curl git build-essential cmake \
-    nvidia-cuda-toolkit \
-  ; \
+  apt-get install -y --no-install-recommends ca-certificates curl git build-essential cmake nvidia-cuda-toolkit; \
   rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp/sage
 
-# Install Torch cu129 in system site (PEP 668: allow system installs)
+# Install Torch cu129 in builder (matches runtime) and build wheel (PEP 668: allow system installs here)
 RUN python -m pip install --upgrade pip setuptools wheel --break-system-packages && \
     python -m pip install torch torchvision torchaudio \
       --extra-index-url https://download.pytorch.org/whl/cu129 \
