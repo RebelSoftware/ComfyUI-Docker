@@ -47,7 +47,8 @@ jobs:
     name: Build on GitHub Runner (primary)
     needs: check-tag
     runs-on: ubuntu-latest
-    continue-on-error: true
+    outputs:
+      build_succeeded: ${{ steps.set_out.outputs.succeeded }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,7 +87,9 @@ jobs:
           password: ${{ secrets.CR_PAT }}
 
       - name: Build and Push (GH runner)
+        id: build
         uses: docker/build-push-action@v6
+        continue-on-error: true
         with:
           context: .
           file: ./Dockerfile
@@ -98,10 +101,15 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ needs.check-tag.outputs.current_tag }}
             ${{ env.IMAGE_NAME }}:latest
 
+      - name: Set outcome flag
+        id: set_out
+        run: |
+          echo "succeeded=${{ steps.build.outcome == 'success' }}" >> "$GITHUB_OUTPUT"
+
   build-self:
     name: Build on Self-Hosted (fallback)
     needs: [check-tag, build-gh]
-    if: needs.build-gh.result != 'success'
+    if: needs.build-gh.outputs.build_succeeded != 'true'
     runs-on: [self-hosted, linux, x64, homelab]
     steps:
       - uses: actions/checkout@v4
@@ -136,55 +144,3 @@ jobs:
         if: ${{ steps.crpat.outputs.present == 'true' }}
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.CR_PAT }}
-
-      - name: Build and Push (self-hosted)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          sbom: false
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ needs.check-tag.outputs.current_tag }}
-            ${{ env.IMAGE_NAME }}:latest
-
-  publish:
-    name: Update Release
-    needs: [check-tag, build-gh, build-self]
-    if: |
-      ${{
-        always() &&
-        (needs.build-gh.result == 'success' || needs.build-self.result == 'success')
-      }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Update GitHub Release (same tag)
-        uses: softprops/action-gh-release@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: ${{ needs.check-tag.outputs.current_tag }}
-          name: Release ${{ needs.check-tag.outputs.current_tag }}
-          body: |
-            New version synced from upstream ComfyUI.
-            Docker image:
-            - docker pull ${{ env.IMAGE_NAME }}:${{ needs.check-tag.outputs.current_tag }}
-            - docker pull ${{ env.IMAGE_NAME }}:latest
-          draft: false
-          prerelease: false
-
-  finalize:
-    name: Finalize Outcome
-    needs: [check-tag, build-gh, build-self, publish]
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Fail if both build paths failed
-        if: ${{ !(needs.build-gh.result == 'success' || needs.build-self.result == 'success') }}
-        run: |
-          echo "Manual rebuild failed on both GitHub-hosted and self-hosted paths."
-          exit 1
