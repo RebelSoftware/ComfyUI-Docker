@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MAX_JOBS=32 \
     SAGE_ATTENTION_AVAILABLE=0
 
-# Enable non-free repositories for nvidia-smi and install system deps + CUDA toolkit
+# Enable non-free repositories and install system deps + CUDA toolkit
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential \
@@ -27,7 +27,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     gnupg2 \
     ca-certificates \
-    software-properties-common \
  && echo "deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list.d/non-free.list \
  && wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb \
  && dpkg -i cuda-keyring_1.1-1_all.deb \
@@ -39,7 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/* \
  && rm cuda-keyring_1.1-1_all.deb
 
-# Set CUDA paths for entrypoint compilation (fix LD_LIBRARY_PATH warning)
+# Set CUDA paths for entrypoint compilation
 ENV CUDA_HOME=/usr/local/cuda-12.9 \
     PATH=/usr/local/cuda-12.9/bin:${PATH} \
     LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64
