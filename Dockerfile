@@ -18,7 +18,7 @@ RUN set -eux; \
 
 WORKDIR /tmp/sage
 
-# Install Torch cu129 in builder (matches runtime) and build wheel (PEP 668: allow system installs here)
+# Install Torch cu129 in builder (matches runtime)
 RUN python -m pip install --upgrade pip setuptools wheel --break-system-packages && \
     python -m pip install torch torchvision torchaudio \
       --extra-index-url https://download.pytorch.org/whl/cu129 \
@@ -26,7 +26,7 @@ RUN python -m pip install --upgrade pip setuptools wheel --break-system-packages
 
 # Shallow clone SageAttention and build a cp312 wheel
 RUN git clone --depth 1 https://github.com/thu-ml/SageAttention.git . && \
-    python -m pip wheel . --no-deps --no-build-isolation -w /dist --break-system-packages
+    python -m pip wheel . --no-deps --no-build-isolation -w /dist
 
 # --------------------------
 # Stage 2: runtime image (slim)
