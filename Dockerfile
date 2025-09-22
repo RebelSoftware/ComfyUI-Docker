@@ -47,8 +47,8 @@ WORKDIR /app/ComfyUI
 COPY requirements.txt ./
 
 # Core Python deps (torch CUDA 12.8, ComfyUI reqs), media/NVML libs
-RUN python -m pip install --upgrade pip setuptools wheel \
- && python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 \
+# Skip upgrading system pip/setuptools/wheel to avoid Debian package conflicts
+RUN python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 \
  && python -m pip install triton \
  && python -m pip install -r requirements.txt \
  && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py
