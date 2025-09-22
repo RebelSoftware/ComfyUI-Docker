@@ -22,9 +22,11 @@
 
 ## About
 
-This repository automates the creation of Docker images for [ComfyUI](https://github.com/comfyanonymous/ComfyUI), a powerful and modular stable diffusion GUI and backend. It syncs with the upstream ComfyUI repository, builds a Docker image on new releases, and pushes it to GitHub Container Registry (GHCR).
+This repository automates the creation of Docker images for [ComfyUI](https://github.com/comfyanonymous/ComfyUI), a powerful and modular stable diffusion GUI and backend.
+It syncs with the upstream ComfyUI repository, builds a Docker image on new releases, and pushes it to GitHub Container Registry (GHCR).
 
-I created this repo for myself as a simple way to stay up to date with the latest ComfyUI versions while having an easy-to-use Docker image. It's particularly suited for setups with **NVIDIA GPUs**, leveraging CUDA for accelerated performance.
+I created this repo for myself as a simple way to stay up to date with the latest ComfyUI versions while having an easy-to-use Docker image.
+It's particularly suited for setups with **NVIDIA GPUs**, leveraging CUDA for accelerated performance.
 
 ### Built With
 - [Docker](https://www.docker.com/)
@@ -39,6 +41,8 @@ I created this repo for myself as a simple way to stay up to date with the lates
 - **NVIDIA GPU Ready**: Pre-configured with CUDA-enabled PyTorch for seamless GPU acceleration.
 - **Non-Root Runtime**: Runs as a non-root user for better security.
 - **Pre-Installed Manager**: Includes ComfyUI-Manager for easy node/extensions management.
+- **SageAttention 2.2 baked in**: The image compiles SageAttention 2.2/2++ from the upstream repository during docker build, ensuring the latest kernels for modern NVIDIA GPUs are included by default.
+- **Auto-enabled at launch**: ComfyUI is started with the `--use-sage-attention` flag so SageAttention is activated automatically on startup (no extra steps required).
 
 ---
 
@@ -47,7 +51,7 @@ I created this repo for myself as a simple way to stay up to date with the lates
 ### Prerequisites
 - **Docker**: Installed on your host (e.g., Docker Desktop or Engine).
 - **NVIDIA GPU**: For GPU support (ensure NVIDIA drivers and CUDA are installed on the host).
-- **NVIDIA Container Toolkit**: For GPU passthrough in Docker (install via [official guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)).
+- **NVIDIA Container Toolkit**: For GPU passthrough in Docker (install via the official guide).
 
 ### Pulling the Image
 The latest image is available on GHCR:
@@ -77,13 +81,7 @@ services:
       - TZ=America/Edmonton
       - PUID=1000
       - GUID=1000
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    gpus: all
     volumes:
       - comfyui_data:/app/ComfyUI/user/default
       - comfyui_nodes:/app/ComfyUI/custom_nodes
@@ -101,6 +99,10 @@ Run with `docker compose up -d`.
 ### Basic Usage
 Access ComfyUI at `http://localhost:8188` after starting the container using Docker Compose.
 
+### SageAttention
+- SageAttention 2.2 is built into the image and enabled automatically on startup via `--use-sage-attention`.
+- To verify, check the container logs on startup; ComfyUI will print a line indicating SageAttention is active.
+
 ### Environment Variables
 - Set via `.env` file or `-e` flags in `docker compose` or `docker run`.
 
@@ -113,7 +115,7 @@ Distributed under the MIT License (same as upstream ComfyUI). See [LICENSE](LICE
 
 ## Contact
 - **Creator**: clsferguson - [GitHub](https://github.com/clsferguson)
-- **Project Link**: [https://github.com/clsferguson/ComfyUI-Docker](https://github.com/clsferguson/ComfyUI-Docker)
+- **Project Link**: https://github.com/clsferguson/ComfyUI-Docker
 
 <p align="center">
   <i>Built with ❤️ for easy AI workflows.</i>
