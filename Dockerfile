@@ -1,32 +1,33 @@
 # --------------------------
-# Stage 1: build SageAttention 2.2 wheel from source with nvcc available
+# Stage 1: build SageAttention 2.2 wheel (Debian trixie + nvcc)
 # --------------------------
-FROM nvidia/cuda:12.9.0-devel-ubuntu24.04 AS sage-builder
+FROM python:3.12.11-slim-trixie AS sage-builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1 \
-    VENV=/opt/venv
+    PIP_NO_CACHE_DIR=1
 
-# Python 3.12 and build tools
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv \
-    git build-essential cmake \
- && rm -rf /var/lib/apt/lists/*
-
-# Create a venv to avoid PEP 668 'externally-managed-environment'
-RUN python3 -m venv "$VENV"
-ENV PATH="$VENV/bin:$PATH"
+# Enable contrib/non-free/non-free-firmware, install CUDA toolkit + build deps
+RUN set -eux; \
+  sed -i 's/ main$/ main contrib non-free non-free-firmware/g' /etc/apt/sources.list; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends \
+    ca-certificates curl git build-essential cmake \
+    nvidia-cuda-toolkit \
+  ; \
+  rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp/sage
 
-# Install Torch (cu129) in the venv before building the extension so ABIs align
-RUN python -m pip install --upgrade pip setuptools wheel \
- && python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129
+# Install Torch cu129 in system site (PEP 668: allow system installs)
+RUN python -m pip install --upgrade pip setuptools wheel --break-system-packages && \
+    python -m pip install torch torchvision torchaudio \
+      --extra-index-url https://download.pytorch.org/whl/cu129 \
+      --break-system-packages
 
-# Shallow clone latest SageAttention and build a cp312 wheel from source
-RUN git clone --depth 1 https://github.com/thu-ml/SageAttention.git . \
- && python -m pip wheel . --no-deps --no-build-isolation -w /dist
+# Shallow clone SageAttention and build a cp312 wheel
+RUN git clone --depth 1 https://github.com/thu-ml/SageAttention.git . && \
+    python -m pip wheel . --no-deps --no-build-isolation -w /dist --break-system-packages
 
 # --------------------------
 # Stage 2: runtime image (slim)
@@ -41,8 +42,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git build-essential cmake \
-    libgl1 libglx-mesa0 libglib2.0-0 \
+    git build-essential cmake libgl1 libglx-mesa0 libglib2.0-0 \
     fonts-dejavu-core fontconfig util-linux \
  && rm -rf /var/lib/apt/lists/*
 
@@ -52,12 +52,13 @@ RUN groupadd --gid 1000 appuser \
 
 WORKDIR /app/ComfyUI
 
-# Install core deps
+# Install core deps (Torch cu129 must match builder)
 COPY requirements.txt ./
-RUN python -m pip install --upgrade pip setuptools wheel \
- && python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129 \
- && python -m pip install -r requirements.txt \
- && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py
+RUN python -m pip install --upgrade pip setuptools wheel && \
+    python -m pip install torch torchvision torchaudio \
+      --extra-index-url https://download.pytorch.org/whl/cu129 && \
+    python -m pip install -r requirements.txt && \
+    python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py
 
 # Install the SageAttention wheel built in the builder stage
 COPY --from=sage-builder /dist/sageattention-*.whl /tmp/
@@ -66,7 +67,7 @@ RUN python -m pip install /tmp/sageattention-*.whl
 # Copy the application
 COPY . .
 
-# Entrypoint
+# Entrypoint and launch
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
  && chown -R appuser:appuser /app /home/appuser /entrypoint.sh
