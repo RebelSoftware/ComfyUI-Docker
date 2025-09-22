@@ -1,77 +1,96 @@
-# --------------------------
-# Stage 1: build SageAttention 2.2 wheel (Debian trixie + nvcc)
-# --------------------------
-FROM python:3.12.11-slim-trixie AS sage-builder
+# ------------------------------------------------------------------------------
+# Builder: CUDA devel image to compile SageAttention from source (Ubuntu 24.04)
+# ------------------------------------------------------------------------------
+FROM nvidia/cuda:12.9.0-devel-ubuntu24.04 AS builder
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+ARG DEBIAN_FRONTEND=noninteractive
+# Configurable ref; use "main" or a tag/branch; set this at build time if needed
+ARG SAGE_REF=main
+# Cache-buster to force re-resolving the latest commit
+ARG SAGE_FORCE_REFRESH=0
 
-# Write explicit Debian sources with contrib/non-free/non-free-firmware, then install CUDA toolkit + build deps
+# System deps for build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates git curl \
+    build-essential cmake ninja-build pkg-config \
+    python3 python3-pip python3-venv python3-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# Ensure recent pip toolchain
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
+RUN python3 -m pip install --upgrade pip setuptools wheel
+
+# Python deps: Torch (CUDA 12.9), Triton
+RUN python3 -m pip install --upgrade \
+    torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129 \
+ && python3 -m pip install "triton>=3.0.0"
+
+# Resolve latest commit for the desired ref and build a wheel for SageAttention 2.x
 RUN set -eux; \
-  printf 'deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware\n' > /etc/apt/sources.list; \
-  printf 'deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware\n' >> /etc/apt/sources.list; \
-  printf 'deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware\n' >> /etc/apt/sources.list; \
-  apt-get update; \
-  apt-get install -y --no-install-recommends ca-certificates curl git build-essential cmake nvidia-cuda-toolkit; \
-  rm -rf /var/lib/apt/lists/*
+    echo "CACHE_BUSTER=${SAGE_FORCE_REFRESH}"; \
+    SAGE_SHA="$(git ls-remote https://github.com/thu-ml/SageAttention.git "${SAGE_REF}" | awk '{print $1}' | head -n1)"; \
+    echo "Resolved SageAttention ${SAGE_REF} -> ${SAGE_SHA}"; \
+    git clone https://github.com/thu-ml/SageAttention.git /build/SageAttention; \
+    cd /build/SageAttention; \
+    git checkout "${SAGE_SHA}"; \
+    export EXT_PARALLEL=4 NVCC_APPEND_FLAGS="--threads 8" MAX_JOBS=32; \
+    python3 -m pip wheel --no-build-isolation --no-deps -w /wheels .
 
-WORKDIR /tmp/sage
+# ------------------------------------------------------------------------------
+# Final image: CUDA runtime (Ubuntu 24.04) + Python 3 + ComfyUI + SageAttention
+# ------------------------------------------------------------------------------
+FROM nvidia/cuda:12.9.0-runtime-ubuntu24.04
 
-# Install Torch cu129 in builder (matches runtime)
-RUN python -m pip install --upgrade pip setuptools wheel --break-system-packages && \
-    python -m pip install torch torchvision torchaudio \
-      --extra-index-url https://download.pytorch.org/whl/cu129 \
-      --break-system-packages
-
-# Shallow clone SageAttention and build a cp312 wheel
-RUN git clone --depth 1 https://github.com/thu-ml/SageAttention.git . && \
-    python -m pip wheel . --no-deps --no-build-isolation -w /dist
-
-# --------------------------
-# Stage 2: runtime image (slim)
-# --------------------------
-FROM python:3.12.11-slim-trixie
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
+ARG DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1 \
     COMFY_AUTO_INSTALL=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git build-essential cmake libgl1 libglx-mesa0 libglib2.0-0 \
-    fonts-dejavu-core fontconfig util-linux \
+    ca-certificates git curl \
+    build-essential cmake \
+    libgl1 libglx-mesa0 libglib2.0-0 fonts-dejavu-core fontconfig util-linux \
+    python3 python3-pip python3-venv python3-dev \
  && rm -rf /var/lib/apt/lists/*
+
+# Convenience: `python`/`pip` aliases
+RUN ln -s /usr/bin/python3 /usr/local/bin/python && ln -s /usr/bin/pip3 /usr/local/bin/pip || true
 
 # Create runtime user/group
 RUN groupadd --gid 1000 appuser \
  && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash appuser
 
+# Workdir
 WORKDIR /app/ComfyUI
 
-# Install core deps (Torch cu129 must match builder)
+# Copy requirements early to leverage caching
 COPY requirements.txt ./
-RUN python -m pip install --upgrade pip setuptools wheel && \
-    python -m pip install torch torchvision torchaudio \
-      --extra-index-url https://download.pytorch.org/whl/cu129 && \
-    python -m pip install -r requirements.txt && \
-    python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py
 
-# Install the SageAttention wheel built in the builder stage
-COPY --from=sage-builder /dist/sageattention-*.whl /tmp/
-RUN python -m pip install /tmp/sageattention-*.whl
+# Core Python deps (Torch CUDA 12.9, app reqs), media/NVML libs, Triton
+RUN python -m pip install --upgrade pip setuptools wheel \
+ && python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129 \
+ && python -m pip install -r requirements.txt \
+ && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py \
+ && python -m pip install "triton>=3.0.0"
+
+# Install SageAttention wheel built in the builder
+COPY --from=builder /wheels /tmp/wheels
+RUN python -m pip install --no-cache-dir /tmp/wheels/*.whl && rm -rf /tmp/wheels
 
 # Copy the application
 COPY . .
 
-# Entrypoint and launch
+# Entrypoint script
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh \
- && chown -R appuser:appuser /app /home/appuser /entrypoint.sh
+RUN chmod +x /entrypoint.sh && chown -R appuser:appuser /app /home/appuser /entrypoint.sh
 
 EXPOSE 8188
+
+# Start as root so entrypoint can adjust ownership and drop privileges
 USER root
 ENTRYPOINT ["/entrypoint.sh"]
+
+# Enable SageAttention by default; override with USE_SAGE_ATTENTION=0 if desired
 CMD ["python", "main.py", "--listen", "0.0.0.0", "--use-sage-attention"]
