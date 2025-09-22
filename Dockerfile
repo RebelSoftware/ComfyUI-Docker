@@ -1,31 +1,33 @@
 # --------------------------
-# Stage 1: build SageAttention 2.2 wheel from source
+# Stage 1: build SageAttention 2.2 wheel from source with nvcc available
 # --------------------------
-FROM python:3.12.11-slim-trixie AS sage-builder
+FROM nvidia/cuda:12.9.0-devel-ubuntu24.04 AS sage-builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
-# Build deps + CUDA toolkit (nvcc) from Debian repos
+# Python 3.12 and build tools (Ubuntu 24.04 ships Python 3.12)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv \
     git build-essential cmake \
-    nvidia-cuda-toolkit nvidia-cuda-dev \
  && rm -rf /var/lib/apt/lists/*
+
+# Make 'python' point to Python 3
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
 
 WORKDIR /tmp/sage
 
-# Match Torch in final image (cu129) before building extension
+# Match runtime Torch (cu129) before building the extension so ABIs align
 RUN python -m pip install --upgrade pip setuptools wheel \
  && python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129
 
-# Shallow clone latest SageAttention and build a wheel
-# (compiles 2.2/2++ from source at repo tip)
+# Shallow clone latest SageAttention and build a cp312 wheel
 RUN git clone --depth 1 https://github.com/thu-ml/SageAttention.git . \
  && python -m pip wheel . --no-deps --no-build-isolation -w /dist
 
 # --------------------------
-# Stage 2: your runtime image
+# Stage 2: runtime image (slim)
 # --------------------------
 FROM python:3.12.11-slim-trixie
 
@@ -56,7 +58,7 @@ RUN groupadd --gid 1000 appuser \
 # Workdir
 WORKDIR /app/ComfyUI
 
-# Copy requirements first for layer caching
+# Leverage layer caching: install deps before copying full tree
 COPY requirements.txt ./
 
 # Core Python deps (Torch CUDA 12.9, ComfyUI reqs), media/NVML libs
