@@ -1,5 +1,5 @@
-# Use NVIDIA CUDA 12.8 devel image for compilation support
-FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
+# Use NVIDIA CUDA 12.9 devel image for maximum GPU compatibility (RTX 20-50 series)
+FROM nvidia/cuda:12.9.0-devel-ubuntu24.04
 
 # Environment
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -34,32 +34,62 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
  && rm -rf /var/lib/apt/lists/*
 
-# Create runtime user/group (handle existing GID/UID gracefully)
-RUN (groupadd --gid 1000 appuser 2>/dev/null || true) \
- && (useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash appuser 2>/dev/null || true) \
- && mkdir -p /home/appuser \
- && chown -R 1000:1000 /home/appuser
+# Create runtime user/group with proper error handling
+RUN set -e; \
+    # Handle existing GID 1000
+    if getent group 1000 >/dev/null 2>&1; then \
+        EXISTING_GROUP=$(getent group 1000 | cut -d: -f1); \
+        echo "GID 1000 exists as group: $EXISTING_GROUP"; \
+        if [ "$EXISTING_GROUP" != "appuser" ]; then \
+            groupadd appuser; \
+            APP_GID=$(getent group appuser | cut -d: -f3); \
+        else \
+            APP_GID=1000; \
+        fi; \
+    else \
+        groupadd --gid 1000 appuser; \
+        APP_GID=1000; \
+    fi; \
+    # Handle existing UID 1000
+    if getent passwd 1000 >/dev/null 2>&1; then \
+        EXISTING_USER=$(getent passwd 1000 | cut -d: -f1); \
+        echo "UID 1000 exists as user: $EXISTING_USER"; \
+        if [ "$EXISTING_USER" != "appuser" ]; then \
+            useradd --gid appuser --create-home --shell /bin/bash appuser; \
+        fi; \
+    else \
+        useradd --uid 1000 --gid appuser --create-home --shell /bin/bash appuser; \
+    fi; \
+    # Ensure home directory exists with correct ownership
+    mkdir -p /home/appuser; \
+    chown appuser:appuser /home/appuser; \
+    echo "Created user: $(id appuser)"; \
+    echo "Created group: $(getent group appuser)"
 
 # Workdir
 WORKDIR /app/ComfyUI
 
-# Leverage layer caching: install deps before copying full tree
-COPY requirements.txt ./
+# Copy requirements.txt with optional handling
+COPY requirements.txt* ./
 
-# Core Python deps (torch CUDA 12.8, ComfyUI reqs), media/NVML libs
-# Skip upgrading system pip/setuptools/wheel to avoid Debian package conflicts
-RUN python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 \
+# Core Python deps (torch CUDA 12.9, ComfyUI reqs), media/NVML libs
+RUN python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129 \
  && python -m pip install triton \
- && python -m pip install -r requirements.txt \
+ && if [ -f requirements.txt ]; then \
+        echo "Installing from requirements.txt"; \
+        python -m pip install -r requirements.txt; \
+    else \
+        echo "No requirements.txt found, skipping"; \
+    fi \
  && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py
 
 # Copy the application
 COPY . .
 
-# Entrypoint
+# Entrypoint with proper ownership
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
- && chown -R appuser:appuser /app /home/appuser /entrypoint.sh
+ && chown appuser:appuser /app /home/appuser /entrypoint.sh
 
 EXPOSE 8188
 
