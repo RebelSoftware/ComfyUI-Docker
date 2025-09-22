@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MAX_JOBS=32 \
     SAGE_ATTENTION_AVAILABLE=0
 
-# System deps + minimal CUDA toolkit for building
+# Enable non-free repositories for nvidia-smi and install system deps + CUDA toolkit
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential \
@@ -27,20 +27,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     gnupg2 \
     ca-certificates \
+    software-properties-common \
+ && echo "deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list.d/non-free.list \
  && wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb \
  && dpkg -i cuda-keyring_1.1-1_all.deb \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
     cuda-nvcc-12-9 \
     cuda-cudart-dev-12-9 \
-    nvidia-utils-545 \
+    nvidia-smi \
  && rm -rf /var/lib/apt/lists/* \
  && rm cuda-keyring_1.1-1_all.deb
 
-# Set CUDA paths for entrypoint compilation
+# Set CUDA paths for entrypoint compilation (fix LD_LIBRARY_PATH warning)
 ENV CUDA_HOME=/usr/local/cuda-12.9 \
     PATH=/usr/local/cuda-12.9/bin:${PATH} \
-    LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64:${LD_LIBRARY_PATH}
+    LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64
 
 # Create symlink for compatibility
 RUN ln -sf /usr/local/cuda-12.9 /usr/local/cuda
@@ -71,7 +73,7 @@ RUN set -e; \
 # Workdir
 WORKDIR /app/ComfyUI
 
-# Leverage layer caching: install deps before copying full tree
+# Copy requirements with optional handling
 COPY requirements.txt* ./
 
 # Core Python deps (torch CUDA 12.9, ComfyUI reqs), media/NVML libs
