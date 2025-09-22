@@ -50,4 +50,4 @@ EXPOSE 8188
 # Start as root so entrypoint can adjust ownership and drop privileges
 USER root
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["python", "main.py", "--listen", "0.0.0.0"]
+CMD ["python", "main.py", "--listen", "0.0.0.0", "--use-sage-attention"]
