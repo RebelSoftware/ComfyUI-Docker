@@ -21,37 +21,28 @@
 ---
 
 ## About
+This image packages upstream [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with CUDA-enabled PyTorch and an entrypoint that can build SageAttention at container startup for modern NVIDIA GPUs.
 
-This repository automates the creation of Docker images for [ComfyUI](https://github.com/comfyanonymous/ComfyUI), a powerful and modular stable diffusion GUI and backend.
+The base image is python:3.12-slim (Debian trixie) with CUDA 12.9 developer libraries installed via apt and PyTorch installed from the cu129 wheel index.
+
 It syncs with the upstream ComfyUI repository, builds a Docker image on new releases, and pushes it to GitHub Container Registry (GHCR).
 
 I created this repo for myself as a simple way to stay up to date with the latest ComfyUI versions while having an easy-to-use Docker image.
-It's particularly suited for setups with **NVIDIA GPUs**, leveraging CUDA for accelerated performance.
-
-### Built With
-- [Docker](https://www.docker.com/)
-- [GitHub Actions](https://github.com/features/actions) for automation
-- [PyTorch](https://pytorch.org/) with CUDA support
-- Based on Python 3.12 slim image
 
 ---
 
 ## Features
-- **Automated Sync & Build**: Daily checks for upstream releases, auto-merges changes, and builds/pushes Docker images.
-- **NVIDIA GPU Ready**: Pre-configured with CUDA-enabled PyTorch for seamless GPU acceleration.
-- **Non-Root Runtime**: Runs as a non-root user for better security.
-- **Pre-Installed Manager**: Includes ComfyUI-Manager for easy node/extensions management.
-- **SageAttention 2.2 baked in**: The image compiles SageAttention 2.2/2++ from the upstream repository during docker build, ensuring the latest kernels for modern NVIDIA GPUs are included by default.
-- **Auto-enabled at launch**: ComfyUI is started with the `--use-sage-attention` flag so SageAttention is activated automatically on startup (no extra steps required).
+- Daily checks for upstream releases, auto-merges changes, and builds/pushes Docker images.
+- CUDA-enabled PyTorch + Triton on Debian trixie with CUDA 12.9 dev libs so custom CUDA builds work at runtime.
+- Non-root runtime with PUID/PGID mapping handled by entrypoint for volume permissions.
+- ComfyUI-Manager auto-sync on startup; entrypoint scans custom_nodes and installs requirements when COMFY_AUTO_INSTALL=1.
+- SageAttention build-on-start with TORCH_CUDA_ARCH_LIST tuned to detected GPUs; enabling is opt-in at runtime via FORCE_SAGE_ATTENTION=1.
 
 ---
 
 ## Getting Started
-
-### Prerequisites
-- **Docker**: Installed on your host (e.g., Docker Desktop or Engine).
-- **NVIDIA GPU**: For GPU support (ensure NVIDIA drivers and CUDA are installed on the host).
-- **NVIDIA Container Toolkit**: For GPU passthrough in Docker (install via the official guide).
+- Install NVIDIA Container Toolkit on the host, then use docker run --gpus all or Compose GPU reservations to pass GPUs through.
+- Expose the ComfyUI server on port 8188 (default) and map volumes for models, inputs, outputs, and custom_nodes.
 
 ### Pulling the Image
 The latest image is available on GHCR:
@@ -60,7 +51,7 @@ The latest image is available on GHCR:
 docker pull ghcr.io/clsferguson/comfyui-docker:latest
 ```
 
-For a specific version (synced with upstream tags, starting at 0.3.57):
+For a specific version (synced with upstream tags, starting at 0.3.59):
 ```bash
 docker pull ghcr.io/clsferguson/comfyui-docker:vX.Y.Z
 ```
@@ -95,16 +86,18 @@ Run with `docker compose up -d`.
 ---
 
 ## Usage
-
-### Basic Usage
-Access ComfyUI at `http://localhost:8188` after starting the container using Docker Compose.
+- Open http://localhost:8188 after the container is up; change the external port via -p HOST:8188 or the internal port with ComfyUI --port/--listen.
+- To target specific GPUs, use Docker’s GPU device selections or Compose device_ids in reservations.
 
 ### SageAttention
-- SageAttention 2.2 is built into the image and enabled automatically on startup via `--use-sage-attention`.
-- To verify, check the container logs on startup; ComfyUI will print a line indicating SageAttention is active.
+- The entrypoint builds and caches SageAttention on startup when GPUs are detected; runtime activation is controlled by FORCE_SAGE_ATTENTION=1.
+- If the SageAttention import test fails, the entrypoint logs a warning and starts ComfyUI without --use-sage-attention even if FORCE_SAGE_ATTENTION=1.
+- To enable: set FORCE_SAGE_ATTENTION=1 and restart; to disable, omit or set to 0.
 
 ### Environment Variables
-- Set via `.env` file or `-e` flags in `docker compose` or `docker run`.
+- PUID/PGID: map container user to host UID/GID for volume write access.
+- COMFY_AUTO_INSTALL=1: auto-install Python requirements from custom_nodes on startup.
+- FORCE_SAGE_ATTENTION=0|1: if 1 and the module import test passes, the entrypoint adds --use-sage-attention.
 
 ---
 
