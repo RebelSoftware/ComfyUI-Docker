@@ -71,7 +71,7 @@ detect_gpu_generations() {
     
     # Store detection results globally
     export DETECTED_RTX20=$has_rtx20
-    export DETECTED_RTX30=$has_rtx30  
+    export DETECTED_RTX30=$has_rtx30
     export DETECTED_RTX40=$has_rtx40
     export DETECTED_RTX50=$has_rtx50
     export GPU_COUNT=$gpu_count
@@ -125,7 +125,6 @@ install_triton_version() {
             ;;
         "rtx50_capable")
             log "Installing latest Triton for RTX 50 series"
-            # Try latest first, fallback to pre-release if needed
             python -m pip install --user --force-reinstall triton || \
             python -m pip install --user --force-reinstall --pre triton || {
                 log "WARNING: Failed to install latest Triton, using stable"
@@ -153,13 +152,14 @@ build_sage_attention_mixed() {
     # Set CUDA architecture list based on detected GPUs
     local cuda_arch_list=""
     [ "$DETECTED_RTX20" = "true" ] && cuda_arch_list="${cuda_arch_list}7.5;"
-    [ "$DETECTED_RTX30" = "true" ] && cuda_arch_list="${cuda_arch_list}8.6;"  
+    [ "$DETECTED_RTX30" = "true" ] && cuda_arch_list="${cuda_arch_list}8.6;"
     [ "$DETECTED_RTX40" = "true" ] && cuda_arch_list="${cuda_arch_list}8.9;"
     [ "$DETECTED_RTX50" = "true" ] && cuda_arch_list="${cuda_arch_list}12.0;"
     
     # Remove trailing semicolon
     cuda_arch_list=${cuda_arch_list%;}
-    
+
+    # Export for PyTorch build
     export TORCH_CUDA_ARCH_LIST="$cuda_arch_list"
     log "Set TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST"
     
@@ -181,7 +181,7 @@ build_sage_attention_mixed() {
         *)
             log "Cloning latest Sage Attention for modern GPUs"
             if [ -d "SageAttention/.git" ]; then
-                cd SageAttention  
+                cd SageAttention
                 git fetch --depth 1 origin || return 1
                 git reset --hard origin/main || return 1
             else
@@ -213,7 +213,8 @@ needs_rebuild() {
         return 0  # Needs build
     fi
     
-    local built_strategy=$(cat "$SAGE_ATTENTION_BUILT_FLAG" 2>/dev/null || echo "unknown")
+    local built_strategy
+    built_strategy=$(cat "$SAGE_ATTENTION_BUILT_FLAG" 2>/dev/null || echo "unknown")
     if [ "$built_strategy" != "$SAGE_STRATEGY" ]; then
         log "GPU configuration changed (was: $built_strategy, now: $SAGE_STRATEGY) - rebuild needed"
         return 0  # Needs rebuild
@@ -229,29 +230,28 @@ import sys
 try:
     import sageattention
     print('[TEST] Sage Attention import: SUCCESS')
-    
     # Try to get version info
     try:
         if hasattr(sageattention, '__version__'):
             print(f'[TEST] Version: {sageattention.__version__}')
     except:
         pass
-    
     sys.exit(0)
 except ImportError as e:
     print(f'[TEST] Sage Attention import: FAILED - {e}')
     sys.exit(1)
 except Exception as e:
-    print(f'[TEST] Sage Attention test: ERROR - {e}')  
+    print(f'[TEST] Sage Attention test: ERROR - {e}')
     sys.exit(1)
 " 2>/dev/null
 }
 
 # Main GPU detection and Sage Attention setup
 setup_sage_attention() {
-    # Initialize Sage Attention availability flag
-    export SAGE_ATTENTION_AVAILABLE=0
-    
+    # DO NOT set SAGE_ATTENTION_AVAILABLE here; respect any user-provided env choice
+    # Track build status separately for logging/visibility
+    export SAGE_ATTENTION_BUILT=0
+
     # Detect GPU generations
     if ! detect_gpu_generations; then
         log "No GPUs detected, skipping Sage Attention setup"
@@ -261,35 +261,19 @@ setup_sage_attention() {
     # Determine optimal strategy
     determine_sage_strategy
     
-    # Check if rebuild is needed
+    # Build/install if needed
     if needs_rebuild || ! test_sage_attention; then
         log "Building Sage Attention..."
-        
-        # Install appropriate Triton version first
-        if install_triton_version; then
-            # Build Sage Attention
-            if build_sage_attention_mixed; then
-                # Test installation
-                if test_sage_attention; then
-                    export SAGE_ATTENTION_AVAILABLE=1
-                    log "Sage Attention setup completed successfully"
-                    log "SAGE_ATTENTION_AVAILABLE=1 (will use --use-sage-attention flag)"
-                else
-                    log "WARNING: Sage Attention build succeeded but import test failed"
-                    export SAGE_ATTENTION_AVAILABLE=0
-                fi
-            else
-                log "ERROR: Sage Attention build failed"
-                export SAGE_ATTENTION_AVAILABLE=0
-            fi
+        if install_triton_version && build_sage_attention_mixed && test_sage_attention; then
+            export SAGE_ATTENTION_BUILT=1
+            log "Sage Attention is built and available; enable by setting SAGE_ATTENTION_AVAILABLE=1 or using --use-sage-attention explicitly"
         else
-            log "ERROR: Triton installation failed, skipping Sage Attention build"
-            export SAGE_ATTENTION_AVAILABLE=0
+            export SAGE_ATTENTION_BUILT=0
+            log "WARNING: Sage Attention is not available after build attempt"
         fi
     else
-        export SAGE_ATTENTION_AVAILABLE=1
-        log "Sage Attention already built and working for current GPU configuration"
-        log "SAGE_ATTENTION_AVAILABLE=1 (will use --use-sage-attention flag)"
+        export SAGE_ATTENTION_BUILT=1
+        log "Sage Attention already built and importable for current GPU configuration"
     fi
 }
 
@@ -404,13 +388,21 @@ if [ "${COMFY_AUTO_INSTALL:-1}" = "1" ]; then
     pip check || true
 fi
 
-# Build ComfyUI command with Sage Attention flag if available
+# Build ComfyUI command with Sage Attention flag only if user explicitly enabled it via env
 COMFYUI_ARGS=""
 if [ "${SAGE_ATTENTION_AVAILABLE:-0}" = "1" ]; then
-    COMFYUI_ARGS="--use-sage-attention"
-    log "Starting ComfyUI with Sage Attention enabled"
+    if test_sage_attention; then
+        COMFYUI_ARGS="--use-sage-attention"
+        log "Starting ComfyUI with Sage Attention enabled by environment (SAGE_ATTENTION_AVAILABLE=1)"
+    else
+        log "WARNING: SAGE_ATTENTION_AVAILABLE=1 but Sage Attention import failed; starting without"
+    fi
 else
-    log "Starting ComfyUI without Sage Attention (not available or build failed)"
+    if [ "${SAGE_ATTENTION_BUILT:-0}" = "1" ]; then
+        log "Sage Attention is built and available; set SAGE_ATTENTION_AVAILABLE=1 to enable it"
+    else
+        log "Sage Attention not available; starting without it"
+    fi
 fi
 
 cd "$BASE_DIR"
@@ -421,7 +413,7 @@ if [ $# -eq 0 ]; then
     exec python main.py --listen 0.0.0.0 $COMFYUI_ARGS
 else
     # Arguments were passed, check if it's the default command
-    if [ "$1" = "python" ] && [ "$2" = "main.py" ]; then
+    if [ "$1" = "python" ] && [ "${2:-}" = "main.py" ]; then
         # Default python command, add our args
         shift 2  # Remove 'python main.py'
         exec python main.py $COMFYUI_ARGS "$@"
