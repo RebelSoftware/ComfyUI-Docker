@@ -17,20 +17,33 @@ log() {
     echo "[$(date '+%H:%M:%S')] $1"
 }
 
-# Function to test PyTorch CUDA compatibility
+# Function to test PyTorch CUDA compatibility and warn for Blackwell (sm_120) if unsupported
 test_pytorch_cuda() {
-    python -c "
-import torch
-import sys
-if not torch.cuda.is_available():
-    print('[ERROR] PyTorch CUDA not available')
+    python - <<'PY' 2>/dev/null
+import sys, torch
+ok = torch.cuda.is_available()
+if not ok:
+    print("[ERROR] PyTorch CUDA not available")
     sys.exit(1)
-device_count = torch.cuda.device_count()
-print(f'[TEST] PyTorch CUDA available with {device_count} devices')
-for i in range(device_count):
-    props = torch.cuda.get_device_properties(i)
-    print(f'[TEST] GPU {i}: {props.name} (Compute {props.major}.{props.minor})')
-" 2>/dev/null
+dc = torch.cuda.device_count()
+print(f"[TEST] PyTorch CUDA available with {dc} devices")
+majors = set()
+for i in range(dc):
+    p = torch.cuda.get_device_properties(i)
+    majors.add(p.major)
+    print(f"[TEST] GPU {i}: {p.name} (Compute {p.major}.{p.minor})")
+# Blackwell warning: require binaries that know sm_120
+cuda_ver = getattr(torch.version, "cuda", None)
+arch_list = []
+try:
+    arch_list = list(getattr(torch.cuda, "get_arch_list")())
+except Exception:
+    pass
+if any(m >= 12 for m in majors):
+    has_120 = any("sm_120" in a or "compute_120" in a for a in arch_list)
+    if not has_120:
+        print("[WARN] Detected Blackwell (sm_120) GPU but current torch build does not expose sm_120; use torch 2.7+ with CUDA 12.8+ binaries or a source build", flush=True)
+PY
 }
 
 # Function to detect all GPUs and their generations (best-effort labels)
@@ -75,10 +88,9 @@ detect_gpu_generations() {
     fi
 }
 
-# Function to determine optimal Sage Attention strategy for mixed GPUs
+# Decide optimal Sage Attention strategy
 determine_sage_strategy() {
     local strategy=""
-
     if [ "${DETECTED_RTX20:-false}" = "true" ]; then
         if [ "${DETECTED_RTX30:-false}" = "true" ] || [ "${DETECTED_RTX40:-false}" = "true" ] || [ "${DETECTED_RTX50:-false}" = "true" ]; then
             strategy="mixed_with_rtx20"
@@ -87,7 +99,7 @@ determine_sage_strategy() {
             strategy="rtx20_only"
             log "RTX 20 series only detected"
         fi
-    elif [ "${DETECTED_RTX50:-false}" = "true" ]; then
+    elif [ "${DETECTED_RTX50:-false}" = "true" ] ; then
         strategy="rtx50_capable"
         log "RTX 50 series detected - using latest optimizations"
     elif [ "${DETECTED_RTX40:-false}" = "true" ] || [ "${DETECTED_RTX30:-false}" = "true" ]; then
@@ -97,17 +109,16 @@ determine_sage_strategy() {
         strategy="fallback"
         log "Unknown or unsupported GPU configuration - using fallback"
     fi
-
     export SAGE_STRATEGY=$strategy
 }
 
-# Function to install appropriate Triton version based on strategy
+# Install Triton appropriate to strategy
 install_triton_version() {
     case "$SAGE_STRATEGY" in
         "mixed_with_rtx20"|"rtx20_only")
             log "Installing Triton 3.2.0 for RTX 20 series compatibility"
             python -m pip install --no-cache-dir --user --force-reinstall "triton==3.2.0" || {
-                log "WARNING: Failed to install specific Triton version, using default"
+                log "WARNING: Failed to install triton==3.2.0; falling back to latest"
                 python -m pip install --no-cache-dir --user --force-reinstall triton || true
             }
             ;;
@@ -115,7 +126,7 @@ install_triton_version() {
             log "Installing latest Triton for RTX 50 series"
             python -m pip install --no-cache-dir --user --force-reinstall triton || \
             python -m pip install --no-cache-dir --user --force-reinstall --pre triton || {
-                log "WARNING: Failed to install latest Triton, using stable >=3.2.0"
+                log "WARNING: Failed to install latest Triton; trying >=3.2.0"
                 python -m pip install --no-cache-dir --user --force-reinstall "triton>=3.2.0" || true
             }
             ;;
@@ -129,20 +140,37 @@ install_triton_version() {
     esac
 }
 
-# Function to compute CUDA arch list from torch
+# Compute TORCH_CUDA_ARCH_LIST from runtime devices; append +PTX on the highest arch for forward-compat
 compute_cuda_arch_list() {
     python - <<'PY' 2>/dev/null
-import torch
+import sys, torch, re
 archs = set()
 if torch.cuda.is_available():
     for i in range(torch.cuda.device_count()):
         p = torch.cuda.get_device_properties(i)
-        archs.add(f"{p.major}.{p.minor}")
-print(";".join(sorted(archs)))
+        archs.add((p.major, p.minor))
+# Fallback: parse compiled archs from torch binary if devices unavailable
+if not archs:
+    try:
+        got = torch.cuda.get_arch_list()
+        for a in got:
+            m = re.match(r".*?(\d+)(\d+)$", a.replace("sm_", "").replace("compute_", ""))
+            if m:
+                archs.add((int(m.group(1)), int(m.group(2))))
+    except Exception:
+        pass
+if not archs:
+    print("")  # nothing
+    sys.exit(0)
+archs = sorted(archs)
+parts = [f"{M}.{m}" for (M,m) in archs]
+# add +PTX to the highest arch for forward-compat builds of extensions
+parts[-1] = parts[-1] + "+PTX"
+print(";".join(parts))
 PY
 }
 
-# Function to build Sage Attention with architecture-specific optimizations
+# Build Sage Attention with architecture-specific optimizations
 build_sage_attention_mixed() {
     log "Building Sage Attention for current GPU environment..."
 
@@ -168,7 +196,7 @@ build_sage_attention_mixed() {
                 git reset --hard origin/v1.0 || return 1
             else
                 rm -rf SageAttention
-                git clone --depth 1 [https://github.com/thu-ml/SageAttention.git](https://github.com/thu-ml/SageAttention.git) -b v1.0 || return 1
+                git clone --depth 1 https://github.com/thu-ml/SageAttention.git -b v1.0 || return 1
                 cd SageAttention
             fi
             ;;
@@ -180,7 +208,7 @@ build_sage_attention_mixed() {
                 git reset --hard origin/main || return 1
             else
                 rm -rf SageAttention
-                git clone --depth 1 [https://github.com/thu-ml/SageAttention.git](https://github.com/thu-ml/SageAttention.git) || return 1
+                git clone --depth 1 https://github.com/thu-ml/SageAttention.git || return 1
                 cd SageAttention
             fi
             ;;
@@ -199,7 +227,7 @@ build_sage_attention_mixed() {
     fi
 }
 
-# Function to check if current build matches detected GPUs
+# Check if current build matches detected GPUs
 needs_rebuild() {
     if [ ! -f "$SAGE_ATTENTION_BUILT_FLAG" ]; then
         return 0
@@ -213,50 +241,47 @@ needs_rebuild() {
     return 1
 }
 
-# Function to check if Sage Attention is working
+# Verify Sage Attention imports
 test_sage_attention() {
-    python -c "
+    python - <<'PY' 2>/dev/null
 import sys
 try:
     import sageattention
-    print('[TEST] Sage Attention import: SUCCESS')
+    print("[TEST] Sage Attention import: SUCCESS")
     try:
-        if hasattr(sageattention, '__version__'):
-            print(f'[TEST] Version: {sageattention.__version__}')
-    except:
+        v = getattr(sageattention, "__version__", None)
+        if v:
+            print(f"[TEST] Version: {v}")
+    except Exception:
         pass
     sys.exit(0)
 except ImportError as e:
-    print(f'[TEST] Sage Attention import: FAILED - {e}')
+    print(f"[TEST] Sage Attention import: FAILED - {e}")
     sys.exit(1)
 except Exception as e:
-    print(f'[TEST] Sage Attention test: ERROR - {e}')
+    print(f"[TEST] Sage Attention test: ERROR - {e}")
     sys.exit(1)
-" 2>/dev/null
+PY
 }
 
 # Main GPU detection and Sage Attention setup
 setup_sage_attention() {
-    # Internal tracking and exported availability flag
     export SAGE_ATTENTION_BUILT=0
     export SAGE_ATTENTION_AVAILABLE=0
 
-    # Detect GPU generations
     if ! detect_gpu_generations; then
         log "No GPUs detected, skipping Sage Attention setup"
         return 0
     fi
 
-    # Determine optimal strategy
     determine_sage_strategy
 
-    # Build/install if needed
     if needs_rebuild || ! test_sage_attention; then
         log "Building Sage Attention..."
         if install_triton_version && build_sage_attention_mixed && test_sage_attention; then
             export SAGE_ATTENTION_BUILT=1
             export SAGE_ATTENTION_AVAILABLE=1
-            log "Sage Attention is built and importable; it will be used only if FORCE_SAGE_ATTENTION=1 on boot"
+            log "Sage Attention is built and importable; enable with FORCE_SAGE_ATTENTION=1"
         else
             export SAGE_ATTENTION_BUILT=0
             export SAGE_ATTENTION_AVAILABLE=0
@@ -289,6 +314,7 @@ if [ "$(id -u)" = "0" ]; then
             [ -e "$d" ] && chown -R "${APP_USER}:${APP_GROUP}" "$d" || true
         done
 
+        # Make Python system install targets writable (under /usr/local only)
         readarray -t PY_PATHS < <(python - <<'PY'
 import sys, sysconfig, os, datetime
 def log(msg):
@@ -345,7 +371,7 @@ if [ -d "$CUSTOM_NODES_DIR/ComfyUI-Manager/.git" ]; then
     git -C "$CUSTOM_NODES_DIR/ComfyUI-Manager" clean -fdx || true
 elif [ ! -d "$CUSTOM_NODES_DIR/ComfyUI-Manager" ]; then
     log "Installing ComfyUI-Manager into $CUSTOM_NODES_DIR/ComfyUI-Manager"
-    git clone --depth 1 [https://github.com/ltdrdata/ComfyUI-Manager.git](https://github.com/ltdrdata/ComfyUI-Manager.git) "$CUSTOM_NODES_DIR/ComfyUI-Manager" || true
+    git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git "$CUSTOM_NODES_DIR/ComfyUI-Manager" || true
 fi
 
 # User-site PATHs for --user installs (custom nodes)
@@ -379,8 +405,6 @@ if [ "$RUN_NODE_INSTALL" = "1" ]; then
     done < <(find "$CUSTOM_NODES_DIR" -maxdepth 2 -type f -iname 'pyproject.toml' -not -path '*/ComfyUI-Manager/*' -print0)
 
     python -m pip check || true
-
-    # Mark first run complete
     touch "$FIRST_RUN_FLAG" || true
 fi
 
