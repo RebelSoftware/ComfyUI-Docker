@@ -17,36 +17,22 @@ log() {
     echo "[$(date '+%H:%M:%S')] $1"
 }
 
-# Function to test PyTorch CUDA compatibility and warn for Blackwell (sm_120) if unsupported
+# Function to test PyTorch CUDA compatibility
 test_pytorch_cuda() {
-    python - <<'PY' 2>/dev/null
-import sys, torch
-ok = torch.cuda.is_available()
-if not ok:
-    print("[ERROR] PyTorch CUDA not available")
+    python -c "
+import torch, sys
+if not torch.cuda.is_available():
+    print('[ERROR] PyTorch CUDA not available')
     sys.exit(1)
-dc = torch.cuda.device_count()
-print(f"[TEST] PyTorch CUDA available with {dc} devices")
-majors = set()
-for i in range(dc):
-    p = torch.cuda.get_device_properties(i)
-    majors.add(p.major)
-    print(f"[TEST] GPU {i}: {p.name} (Compute {p.major}.{p.minor})")
-# Blackwell warning: require binaries that know sm_120
-cuda_ver = getattr(torch.version, "cuda", None)
-arch_list = []
-try:
-    arch_list = list(getattr(torch.cuda, "get_arch_list")())
-except Exception:
-    pass
-if any(m >= 12 for m in majors):
-    has_120 = any("sm_120" in a or "compute_120" in a for a in arch_list)
-    if not has_120:
-        print("[WARN] Detected Blackwell (sm_120) GPU but current torch build does not expose sm_120; use torch 2.7+ with CUDA 12.8+ binaries or a source build", flush=True)
-PY
+c = torch.cuda.device_count()
+print(f'[TEST] PyTorch CUDA available with {c} devices')
+for i in range(c):
+    props = torch.cuda.get_device_properties(i)
+    print(f'[TEST] GPU {i}: {props.name} (Compute {props.major}.{props.minor})')
+" 2>/dev/null
 }
 
-# Function to detect all GPUs and their generations (best-effort labels)
+# Function to detect all GPUs and their generations
 detect_gpu_generations() {
     local gpu_info
     gpu_info=$(nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null || echo "")
@@ -88,21 +74,21 @@ detect_gpu_generations() {
     fi
 }
 
-# Decide optimal Sage Attention strategy
+# Function to determine optimal Sage Attention strategy for mixed GPUs
 determine_sage_strategy() {
     local strategy=""
-    if [ "${DETECTED_RTX20:-false}" = "true" ]; then
-        if [ "${DETECTED_RTX30:-false}" = "true" ] || [ "${DETECTED_RTX40:-false}" = "true" ] || [ "${DETECTED_RTX50:-false}" = "true" ]; then
+    if [ "$DETECTED_RTX20" = "true" ]; then
+        if [ "$DETECTED_RTX30" = "true" ] || [ "$DETECTED_RTX40" = "true" ] || [ "$DETECTED_RTX50" = "true" ]; then
             strategy="mixed_with_rtx20"
             log "Mixed GPU setup detected with RTX 20 series - using compatibility mode"
         else
             strategy="rtx20_only"
             log "RTX 20 series only detected"
         fi
-    elif [ "${DETECTED_RTX50:-false}" = "true" ] ; then
+    elif [ "$DETECTED_RTX50" = "true" ]; then
         strategy="rtx50_capable"
         log "RTX 50 series detected - using latest optimizations"
-    elif [ "${DETECTED_RTX40:-false}" = "true" ] || [ "${DETECTED_RTX30:-false}" = "true" ]; then
+    elif [ "$DETECTED_RTX40" = "true" ] || [ "$DETECTED_RTX30" = "true" ]; then
         strategy="rtx30_40_optimized"
         log "RTX 30/40 series detected - using standard optimizations"
     else
@@ -112,27 +98,27 @@ determine_sage_strategy() {
     export SAGE_STRATEGY=$strategy
 }
 
-# Install Triton appropriate to strategy
+# Function to install appropriate Triton version based on strategy
 install_triton_version() {
     case "$SAGE_STRATEGY" in
         "mixed_with_rtx20"|"rtx20_only")
-            log "Installing Triton 3.2.0 for RTX 20 series compatibility"
-            python -m pip install --no-cache-dir --user --force-reinstall "triton==3.2.0" || {
-                log "WARNING: Failed to install triton==3.2.0; falling back to latest"
-                python -m pip install --no-cache-dir --user --force-reinstall triton || true
+            log "Installing Triton 3.2.0 for broader compatibility on Turing-era GPUs"
+            python -m pip install --user --force-reinstall "triton==3.2.0" || {
+                log "WARNING: Failed to pin Triton 3.2.0, trying latest"
+                python -m pip install --user --force-reinstall triton || true
             }
             ;;
         "rtx50_capable")
-            log "Installing latest Triton for RTX 50 series"
-            python -m pip install --no-cache-dir --user --force-reinstall triton || \
-            python -m pip install --no-cache-dir --user --force-reinstall --pre triton || {
-                log "WARNING: Failed to install latest Triton; trying >=3.2.0"
-                python -m pip install --no-cache-dir --user --force-reinstall "triton>=3.2.0" || true
+            log "Installing latest Triton for Blackwell/RTX 50"
+            python -m pip install --user --force-reinstall triton || \
+            python -m pip install --user --force-reinstall --pre triton || {
+                log "WARNING: Latest Triton install failed, falling back to >=3.2.0"
+                python -m pip install --user --force-reinstall "triton>=3.2.0" || true
             }
             ;;
         *)
             log "Installing latest stable Triton"
-            python -m pip install --no-cache-dir --user --force-reinstall triton || {
+            python -m pip install --user --force-reinstall triton || {
                 log "WARNING: Triton installation failed, continuing without"
                 return 1
             }
@@ -140,55 +126,28 @@ install_triton_version() {
     esac
 }
 
-# Compute TORCH_CUDA_ARCH_LIST from runtime devices; append +PTX on the highest arch for forward-compat
-compute_cuda_arch_list() {
-    python - <<'PY' 2>/dev/null
-import sys, torch, re
-archs = set()
-if torch.cuda.is_available():
-    for i in range(torch.cuda.device_count()):
-        p = torch.cuda.get_device_properties(i)
-        archs.add((p.major, p.minor))
-# Fallback: parse compiled archs from torch binary if devices unavailable
-if not archs:
-    try:
-        got = torch.cuda.get_arch_list()
-        for a in got:
-            m = re.match(r".*?(\d+)(\d+)$", a.replace("sm_", "").replace("compute_", ""))
-            if m:
-                archs.add((int(m.group(1)), int(m.group(2))))
-    except Exception:
-        pass
-if not archs:
-    print("")  # nothing
-    sys.exit(0)
-archs = sorted(archs)
-parts = [f"{M}.{m}" for (M,m) in archs]
-# add +PTX to the highest arch for forward-compat builds of extensions
-parts[-1] = parts[-1] + "+PTX"
-print(";".join(parts))
-PY
-}
-
-# Build Sage Attention with architecture-specific optimizations
+# Function to build Sage Attention with architecture-specific optimizations
 build_sage_attention_mixed() {
     log "Building Sage Attention for current GPU environment..."
-
     mkdir -p "$SAGE_ATTENTION_DIR"
     cd "$SAGE_ATTENTION_DIR"
 
-    local cuda_arch_list
-    cuda_arch_list="$(compute_cuda_arch_list || true)"
-    if [ -n "${cuda_arch_list:-}" ]; then
-        export TORCH_CUDA_ARCH_LIST="$cuda_arch_list"
-        log "Set TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST"
-    else
-        log "Could not infer TORCH_CUDA_ARCH_LIST from torch; proceeding with PyTorch defaults"
-    fi
+    # Compute capability mapping for TORCH_CUDA_ARCH_LIST:
+    # Turing = 7.5, Ampere = 8.6, Ada = 8.9, Blackwell (RTX 50) = 10.0
+    # See NVIDIA Blackwell guide (sm_100/compute_100 ~ 10.0) and PyTorch arch list semantics. [doc refs in text]
+    local cuda_arch_list=""
+    [ "$DETECTED_RTX20" = "true" ] && cuda_arch_list="${cuda_arch_list}7.5;"
+    [ "$DETECTED_RTX30" = "true" ] && cuda_arch_list="${cuda_arch_list}8.6;"
+    [ "$DETECTED_RTX40" = "true" ] && cuda_arch_list="${cuda_arch_list}8.9;"
+    [ "$DETECTED_RTX50" = "true" ] && cuda_arch_list="${cuda_arch_list}10.0;"
+    cuda_arch_list=${cuda_arch_list%;}
+
+    export TORCH_CUDA_ARCH_LIST="$cuda_arch_list"
+    log "Set TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST"
 
     case "$SAGE_STRATEGY" in
         "mixed_with_rtx20"|"rtx20_only")
-            log "Cloning Sage Attention v1.0 for RTX 20 series compatibility"
+            log "Cloning SageAttention v1.0 for RTX 20 series compatibility"
             if [ -d "SageAttention/.git" ]; then
                 cd SageAttention
                 git fetch --depth 1 origin || return 1
@@ -201,7 +160,7 @@ build_sage_attention_mixed() {
             fi
             ;;
         *)
-            log "Cloning latest Sage Attention for modern GPUs"
+            log "Cloning latest SageAttention for modern GPUs"
             if [ -d "SageAttention/.git" ]; then
                 cd SageAttention
                 git fetch --depth 1 origin || return 1
@@ -214,20 +173,20 @@ build_sage_attention_mixed() {
             ;;
     esac
 
-    log "Building Sage Attention..."
-    if MAX_JOBS=$(nproc) python -m pip install --no-cache-dir --user --no-build-isolation .; then
+    log "Building SageAttention (no-build-isolation) ..."
+    if MAX_JOBS=$(nproc) python -m pip install --user --no-build-isolation .; then
         echo "$SAGE_STRATEGY" > "$SAGE_ATTENTION_BUILT_FLAG"
-        log "Sage Attention built successfully for strategy: $SAGE_STRATEGY"
+        log "SageAttention built successfully for strategy: $SAGE_STRATEGY"
         cd "$BASE_DIR"
         return 0
     else
-        log "ERROR: Sage Attention build failed"
+        log "ERROR: SageAttention build failed"
         cd "$BASE_DIR"
         return 1
     fi
 }
 
-# Check if current build matches detected GPUs
+# Function to check if current build matches detected GPUs
 needs_rebuild() {
     if [ ! -f "$SAGE_ATTENTION_BUILT_FLAG" ]; then
         return 0
@@ -241,56 +200,56 @@ needs_rebuild() {
     return 1
 }
 
-# Verify Sage Attention imports
+# Function to check if SageAttention is working
 test_sage_attention() {
-    python - <<'PY' 2>/dev/null
+    python -c "
 import sys
 try:
     import sageattention
-    print("[TEST] Sage Attention import: SUCCESS")
+    print('[TEST] SageAttention import: SUCCESS')
     try:
-        v = getattr(sageattention, "__version__", None)
-        if v:
-            print(f"[TEST] Version: {v}")
-    except Exception:
+        v = getattr(sageattention, '__version__', None)
+        if v: print(f'[TEST] Version: {v}')
+    except:
         pass
     sys.exit(0)
 except ImportError as e:
-    print(f"[TEST] Sage Attention import: FAILED - {e}")
+    print(f'[TEST] SageAttention import: FAILED - {e}')
     sys.exit(1)
 except Exception as e:
-    print(f"[TEST] Sage Attention test: ERROR - {e}")
+    print(f'[TEST] SageAttention test: ERROR - {e}')
     sys.exit(1)
-PY
+" 2>/dev/null
 }
 
-# Main GPU detection and Sage Attention setup
+# Main GPU detection and SageAttention setup
 setup_sage_attention() {
+    # Export build-visible status flags
     export SAGE_ATTENTION_BUILT=0
     export SAGE_ATTENTION_AVAILABLE=0
 
     if ! detect_gpu_generations; then
-        log "No GPUs detected, skipping Sage Attention setup"
+        log "No GPUs detected, skipping SageAttention setup"
         return 0
     fi
 
     determine_sage_strategy
 
     if needs_rebuild || ! test_sage_attention; then
-        log "Building Sage Attention..."
+        log "Building SageAttention..."
         if install_triton_version && build_sage_attention_mixed && test_sage_attention; then
             export SAGE_ATTENTION_BUILT=1
             export SAGE_ATTENTION_AVAILABLE=1
-            log "Sage Attention is built and importable; enable with FORCE_SAGE_ATTENTION=1"
+            log "SageAttention is built; set FORCE_SAGE_ATTENTION=1 to enable it at startup"
         else
             export SAGE_ATTENTION_BUILT=0
             export SAGE_ATTENTION_AVAILABLE=0
-            log "WARNING: Sage Attention is not available after build attempt"
+            log "WARNING: SageAttention is not available after build attempt"
         fi
     else
         export SAGE_ATTENTION_BUILT=1
         export SAGE_ATTENTION_AVAILABLE=1
-        log "Sage Attention already built and importable for current GPU configuration"
+        log "SageAttention already built and importable for current GPU configuration"
     fi
 }
 
@@ -298,7 +257,6 @@ setup_sage_attention() {
 if [ "$(id -u)" = "0" ]; then
     if [ ! -f "$PERMISSIONS_SET_FLAG" ]; then
         log "Setting up user permissions..."
-
         if getent group "${PGID}" >/dev/null; then
             EXISTING_GRP="$(getent group "${PGID}" | cut -d: -f1)"
             usermod -g "${EXISTING_GRP}" "${APP_USER}" || true
@@ -306,18 +264,16 @@ if [ "$(id -u)" = "0" ]; then
         else
             groupmod -o -g "${PGID}" "${APP_GROUP}" || true
         fi
-
         usermod -o -u "${PUID}" "${APP_USER}" || true
-
         mkdir -p "/home/${APP_USER}"
         for d in "$BASE_DIR" "/home/$APP_USER"; do
             [ -e "$d" ] && chown -R "${APP_USER}:${APP_GROUP}" "$d" || true
         done
 
-        # Make Python system install targets writable (under /usr/local only)
         readarray -t PY_PATHS < <(python - <<'PY'
 import sys, sysconfig, os, datetime
 def log(msg):
+    import datetime
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[bootstrap:python {ts}] {msg}", file=sys.stderr, flush=True)
 log("Determining writable Python install targets via sysconfig.get_paths()")
@@ -338,7 +294,6 @@ if d:
 log("Finished emitting target directories")
 PY
 )
-
         for d in "${PY_PATHS[@]}"; do
             case "$d" in
                 /usr/local|/usr/local/*)
@@ -349,18 +304,16 @@ PY
                 *) : ;;
             esac
         done
-
         touch "$PERMISSIONS_SET_FLAG"
         chown "${APP_USER}:${APP_GROUP}" "$PERMISSIONS_SET_FLAG"
         log "User permissions configured"
     else
         log "User permissions already configured, skipping..."
     fi
-
     exec runuser -u "${APP_USER}" -- "$0" "$@"
 fi
 
-# Setup Sage Attention for detected GPU configuration
+# Setup SageAttention for detected GPU configuration
 setup_sage_attention
 
 # Ensure ComfyUI-Manager exists or update it (shallow)
@@ -379,58 +332,56 @@ export PATH="$HOME/.local/bin:$PATH"
 pyver="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 export PYTHONPATH="$HOME/.local/lib/python${pyver}/site-packages:${PYTHONPATH:-}"
 
-# First-run detection for custom node deps
-RUN_NODE_INSTALL=0
-if [ ! -f "$FIRST_RUN_FLAG" ]; then
-    RUN_NODE_INSTALL=1
-    log "First run detected: installing custom node dependencies"
-elif [ "${COMFY_AUTO_INSTALL:-0}" = "1" ]; then
-    RUN_NODE_INSTALL=1
-    log "COMFY_AUTO_INSTALL=1: forcing custom node dependency install"
+# First-run driven auto-install of custom node deps
+if [ ! -f "$FIRST_RUN_FLAG" ] || [ "${COMFY_FORCE_INSTALL:-0}" = "1" ]; then
+    if [ "${COMFY_AUTO_INSTALL:-1}" = "1" ]; then
+        log "First run detected or forced; scanning custom nodes for requirements..."
+        # requirements*.txt
+        while IFS= read -r -d '' req; do
+            log "python -m pip install --user --upgrade -r $req"
+            python -m pip install --no-cache-dir --user --upgrade --upgrade-strategy only-if-needed -r "$req" || true
+        done < <(find "$CUSTOM_NODES_DIR" -maxdepth 3 -type f \( -iname 'requirements.txt' -o -iname 'requirements-*.txt' -o -path '*/requirements/*.txt' \) -print0)
+
+        # pyproject.toml (exclude ComfyUI-Manager)
+        while IFS= read -r -d '' pjt; do
+            d="$(dirname "$pjt")"
+            log "python -m pip install --user . in $d"
+            (cd "$d" && python -m pip install --no-cache-dir --user .) || true
+        done < <(find "$CUSTOM_NODES_DIR" -maxdepth 2 -type f -iname 'pyproject.toml' -not -path '*/ComfyUI-Manager/*' -print0)
+
+        python -m pip check || true
+    else
+        log "COMFY_AUTO_INSTALL=0; skipping dependency install on first run"
+    fi
+    touch "$FIRST_RUN_FLAG"
 else
-    log "Not first run and COMFY_AUTO_INSTALL!=1: skipping custom node dependency install"
+    log "Not first run; skipping custom_nodes dependency install"
 fi
 
-if [ "$RUN_NODE_INSTALL" = "1" ]; then
-    log "Scanning custom nodes for requirements..."
-    while IFS= read -r -d '' req; do
-        log "python -m pip install --user --upgrade -r $req"
-        python -m pip install --no-cache-dir --user --upgrade --upgrade-strategy only-if-needed -r "$req" || true
-    done < <(find "$CUSTOM_NODES_DIR" -maxdepth 3 -type f \( -iname 'requirements.txt' -o -iname 'requirements-*.txt' -o -path '*/requirements/*.txt' \) -print0)
-
-    while IFS= read -r -d '' pjt; do
-        d="$(dirname "$pjt")"
-        log "python -m pip install --user . in $d"
-        (cd "$d" && python -m pip install --no-cache-dir --user .) || true
-    done < <(find "$CUSTOM_NODES_DIR" -maxdepth 2 -type f -iname 'pyproject.toml' -not -path '*/ComfyUI-Manager/*' -print0)
-
-    python -m pip check || true
-    touch "$FIRST_RUN_FLAG" || true
-fi
-
-# Build ComfyUI command with Sage Attention flag only if forced
+# Build ComfyUI command with SageAttention usage controlled only by FORCE_SAGE_ATTENTION
 COMFYUI_ARGS=""
 if [ "${FORCE_SAGE_ATTENTION:-0}" = "1" ]; then
     if test_sage_attention; then
         COMFYUI_ARGS="--use-sage-attention"
-        log "Starting ComfyUI with Sage Attention forced by environment (FORCE_SAGE_ATTENTION=1)"
+        log "Starting ComfyUI with SageAttention enabled by environment (FORCE_SAGE_ATTENTION=1)"
     else
-        log "WARNING: FORCE_SAGE_ATTENTION=1 but Sage Attention import failed; starting without"
+        log "WARNING: FORCE_SAGE_ATTENTION=1 but SageAttention import failed; starting without"
     fi
 else
     if [ "${SAGE_ATTENTION_AVAILABLE:-0}" = "1" ]; then
-        log "Sage Attention is built and available; set FORCE_SAGE_ATTENTION=1 to enable it on boot"
+        log "SageAttention is built; set FORCE_SAGE_ATTENTION=1 to enable it at startup"
     else
-        log "Sage Attention not available; starting without it"
+        log "SageAttention not available; starting without it"
     fi
 fi
 
 cd "$BASE_DIR"
 
+# Handle both direct execution and passed arguments
 if [ $# -eq 0 ]; then
     exec python main.py --listen 0.0.0.0 $COMFYUI_ARGS
 else
-    if [ "${1:-}" = "python" ] && [ "${2:-}" = "main.py" ]; then
+    if [ "$1" = "python" ] && [ "${2:-}" = "main.py" ]; then
         shift 2
         exec python main.py $COMFYUI_ARGS "$@"
     else
