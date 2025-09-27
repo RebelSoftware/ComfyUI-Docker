@@ -187,7 +187,7 @@ build_sage_attention_mixed() {
     esac
 
     log "Building Sage Attention..."
-    if MAX_JOBS=$(nproc) python -m pip install --no-cache-dir --user --no-build-isolation .; then
+    if MAX_JOBS="${MAX_JOBS:-2}" python -m pip install --no-cache-dir --user --no-build-isolation .; then
         echo "$SAGE_STRATEGY" > "$SAGE_ATTENTION_BUILT_FLAG"
         log "Sage Attention built successfully for strategy: $SAGE_STRATEGY"
         cd "$BASE_DIR"
@@ -237,26 +237,22 @@ except Exception as e:
 
 # Main GPU detection and Sage Attention setup
 setup_sage_attention() {
-    # Internal tracking and exported availability flag
     export SAGE_ATTENTION_BUILT=0
     export SAGE_ATTENTION_AVAILABLE=0
 
-    # Detect GPU generations
     if ! detect_gpu_generations; then
         log "No GPUs detected, skipping Sage Attention setup"
         return 0
     fi
 
-    # Determine optimal strategy
     determine_sage_strategy
 
-    # Build/install if needed
     if needs_rebuild || ! test_sage_attention; then
         log "Building Sage Attention..."
         if install_triton_version && build_sage_attention_mixed && test_sage_attention; then
             export SAGE_ATTENTION_BUILT=1
             export SAGE_ATTENTION_AVAILABLE=1
-            log "Sage Attention is built and importable; enable at boot by setting FORCE_SAGE_ATTENTION=1"
+            log "Sage Attention is built and importable; set FORCE_SAGE_ATTENTION=1 to enable at startup"
         else
             export SAGE_ATTENTION_BUILT=0
             export SAGE_ATTENTION_AVAILABLE=0
@@ -334,6 +330,28 @@ PY
     exec runuser -u "${APP_USER}" -- "$0" "$@"
 fi
 
+# Early PATH and Python user-site for the runtime user (before any pip work)
+export PATH="$HOME/.local/bin:$PATH"
+pyver="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+export PYTHONPATH="$HOME/.local/lib/python${pyver}/site-packages:${PYTHONPATH:-}"
+
+# Safer parallelism for extension builds to avoid OOM
+detect_jobs() {
+  local cpu="$(nproc 2>/dev/null || echo 2)"
+  local mem_mb="$(awk '/MemTotal:/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)"
+  local mem_jobs=2
+  if [ "$mem_mb" -gt 0 ]; then
+    if [ "$mem_mb" -ge 32768 ]; then mem_jobs=4; else mem_jobs=2; fi
+  fi
+  local cap="$mem_jobs"
+  if [ "$cpu" -lt "$cap" ]; then cap="$cpu"; fi
+  [ "$cap" -lt 1 ] && cap=1
+  echo "$cap"
+}
+export MAX_JOBS="${SAGEATTENTION_MAX_JOBS:-$(detect_jobs)}"
+export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-$MAX_JOBS}"
+log "Capping extension build parallelism: MAX_JOBS=$MAX_JOBS, CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL"
+
 # Setup Sage Attention for detected GPU configuration
 setup_sage_attention
 
@@ -347,11 +365,6 @@ elif [ ! -d "$CUSTOM_NODES_DIR/ComfyUI-Manager" ]; then
     log "Installing ComfyUI-Manager into $CUSTOM_NODES_DIR/ComfyUI-Manager"
     git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git "$CUSTOM_NODES_DIR/ComfyUI-Manager" || true
 fi
-
-# User-site PATHs for --user installs (custom nodes)
-export PATH="$HOME/.local/bin:$PATH"
-pyver="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-export PYTHONPATH="$HOME/.local/lib/python${pyver}/site-packages:${PYTHONPATH:-}"
 
 # First-run detection for custom node deps (with override)
 RUN_NODE_INSTALL=0
@@ -379,8 +392,6 @@ if [ "$RUN_NODE_INSTALL" = "1" ]; then
     done < <(find "$CUSTOM_NODES_DIR" -maxdepth 2 -type f -iname 'pyproject.toml' -not -path '*/ComfyUI-Manager/*' -print0)
 
     python -m pip check || true
-
-    # Mark first run complete (or keep flag if already set)
     touch "$FIRST_RUN_FLAG" || true
 fi
 
