@@ -319,7 +319,6 @@ export PIP_PREFER_BINARY=1
 # Abort early if no compatible NVIDIA GPU (>= sm_75) is present
 if ! gpu_is_compatible; then
     log "No compatible NVIDIA GPU detected (compute capability 7.5+ required). Shutting down container."
-    # Exit 0 to avoid restart loops in some runtimes
     exit 0
 fi
 
@@ -342,25 +341,24 @@ if [ ! -f "$FIRST_RUN_FLAG" ] || [ "${COMFY_FORCE_INSTALL:-0}" = "1" ]; then
     if [ "${COMFY_AUTO_INSTALL:-1}" = "1" ]; then
         log "First run or forced; installing custom node dependencies..."
 
-        # 1) Install requirements files (Manager-like behavior)
-        while IFS= read -r -d '' req; do
-            log "python -m pip install --user --upgrade --upgrade-strategy only-if-needed -r $req"
-            python -m pip install --no-cache-dir --user --upgrade --upgrade-strategy only-if-needed -r "$req" || true
-        done < <(find "$CUSTOM_NODES_DIR" -maxdepth 3 -type f \( -iname 'requirements.txt' -o -iname 'requirements-*.txt' -o -path '*/requirements/*.txt' \) -print0)
+        # Manager-like behavior: per-node, top-level requirements.txt only, plus optional install.py;
+        shopt -s nullglob
+        for d in "$CUSTOM_NODES_DIR"/*; do
+            [ -d "$d" ] || continue
+            base="$(basename "$d")"
+            [ "$base" = "ComfyUI-Manager" ] && continue
 
-        # 2) Install from pyproject (editable build avoided to mimic Manager’s typical install)
-        while IFS= read -r -d '' pjt; do
-            d="$(dirname "$pjt")"
-            log "python -m pip install --user . in $d"
-            (cd "$d" && python -m pip install --no-cache-dir --user .) || true
-        done < <(find "$CUSTOM_NODES_DIR" -maxdepth 2 -type f -iname 'pyproject.toml' -not -path '*/ComfyUI-Manager/*' -print0)
+            if [ -f "$d/requirements.txt" ]; then
+                log "Installing requirements for node: $base"
+                python -m pip install --no-cache-dir --user --upgrade --upgrade-strategy only-if-needed -r "$d/requirements.txt" || true
+            fi
 
-        # 3) Run node-provided install.py if present (Manager runs install scripts; mirror that)
-        while IFS= read -r -d '' inst; do
-            d="$(dirname "$inst")"
-            log "Running node install script: $inst"
-            (cd "$d" && python "$inst") || true
-        done < <(find "$CUSTOM_NODES_DIR" -maxdepth 2 -type f -iname 'install.py' -not -path '*/ComfyUI-Manager/*' -print0)
+            if [ -f "$d/install.py" ]; then
+                log "Running install.py for node: $base"
+                (cd "$d" && python "install.py") || true
+            fi
+        done
+        shopt -u nullglob
 
         python -m pip check || true
     else
@@ -373,12 +371,15 @@ fi
 
 # --- launch ComfyUI ---
 COMFYUI_ARGS=""
-if [ "${FORCE_SAGE_ATTENTION:-0}" = "1" ]; then
-    if test_sage_attention; then COMFYUI_ARGS="--use-sage-attention"; log "Starting ComfyUI with SageAttention (FORCE_SAGE_ATTENTION=1)"
-    else log "WARNING: FORCE_SAGE_ATTENTION=1 but import failed; starting without"; fi
+if [ "${FORCE_SAGE_ATTENTION:-0}" = "1" ] && test_sage_attention; then
+    COMFYUI_ARGS="--use-sage-attention"
+    log "Starting ComfyUI with SageAttention (FORCE_SAGE_ATTENTION=1)"
 else
-    if [ "${SAGE_ATTENTION_AVAILABLE:-0}" = "1" ]; then log "SageAttention is built; set FORCE_SAGE_ATTENTION=1 to enable"
-    else log "SageAttention not available; starting without it"; fi
+    if [ "${SAGE_ATTENTION_AVAILABLE:-0}" = "1" ]; then
+        log "SageAttention is built; set FORCE_SAGE_ATTENTION=1 to enable"
+    else
+        log "SageAttention not available; starting without it"
+    fi
 fi
 
 cd "$BASE_DIR"
