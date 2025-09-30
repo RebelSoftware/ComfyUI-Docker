@@ -33,7 +33,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ninja-build \
     patch \
     pkg-config \
-    libcairo2 \
     libcairo2-dev \
  && echo "deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list.d/non-free.list \
  && wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb \
@@ -51,7 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/* \
  && rm cuda-keyring_1.1-1_all.deb
 
-# Install uv (latest) by copying binaries from Astral's official distroless image
+# Install uv (latest)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 # Patch CUDA math_functions.h for glibc 2.41 compatibility
@@ -97,12 +96,12 @@ WORKDIR /app/ComfyUI
 # Copy requirements with optional handling
 COPY requirements.txt* ./
 
-# Core Python deps (torch CUDA 12.9, ComfyUI reqs), media/NVML libs, and CuPy (CUDA 12.x wheel)
+# Core Python deps (torch CUDA 12.9, ComfyUI reqs, media/NVML libs, CuPy (CUDA 12.x wheel), and ORT-GPU)
 RUN python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129 \
  && python -m pip install triton \
  && python -m pip install --prefer-binary cupy-cuda12x \
  && if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi \
- && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py
+ && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py onnxruntime-gpu
 
 # Copy the application
 COPY . .
