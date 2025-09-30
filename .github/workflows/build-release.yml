@@ -124,12 +124,6 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ needs.check-tag.outputs.current_tag }}
             ${{ env.IMAGE_NAME }}:latest
 
-      - name: Prune Docker caches (post)
-        if: always()
-        run: |
-          docker builder prune -af || true
-          docker system prune -af --volumes || true
-
   build-self:
     name: Build on Self-Hosted (fallback)
     needs: [check-tag, build-gh]
@@ -186,12 +180,6 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:${{ needs.check-tag.outputs.current_tag }}
             ${{ env.IMAGE_NAME }}:latest
-
-      - name: Prune Docker caches (post)
-        if: always()
-        run: |
-          docker builder prune -af || true
-          docker system prune -af --volumes || true
 
   publish:
     name: Update Release
