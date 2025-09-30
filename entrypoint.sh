@@ -13,12 +13,11 @@ SAGE_ATTENTION_BUILT_FLAG="$SAGE_ATTENTION_DIR/.built"
 PERMISSIONS_SET_FLAG="$BASE_DIR/.permissions_set"
 FIRST_RUN_FLAG="$BASE_DIR/.first_run_done"
 
-# Sage flags:
-# - SAGE_ATTENTION_AVAILABLE: set by script to indicate built/importable
-# - FORCE_SAGE_ATTENTION=1: force app to enable at startup (default 0)
-
 # --- logging ---
 log() { echo "[$(date '+%H:%M:%S')] $1"; }
+
+# Make newly created files group-writable (helps in shared volumes)
+umask 0002
 
 # --- build parallelism (single knob) ---
 # Public knob: SAGE_MAX_JOBS. If unset, pick RAM/CPU heuristic.
@@ -46,6 +45,26 @@ for i in range(c):
     p=torch.cuda.get_device_properties(i)
     print(f'[TEST] GPU {i}: {p.name} (Compute {p.major}.{p.minor})')
 " 2>/dev/null
+}
+
+# Determine if there is a compatible NVIDIA GPU (>= sm_75, i.e., 16-series/Turing and newer)
+gpu_is_compatible() {
+    python - <<'PY' 2>/dev/null
+import sys
+try:
+    import torch
+    if not torch.cuda.is_available():
+        sys.exit(2)
+    ok=False
+    for i in range(torch.cuda.device_count()):
+        p=torch.cuda.get_device_properties(i)
+        cc=float(f"{p.major}.{p.minor}")
+        if cc >= 7.5:
+            ok=True
+    sys.exit(0 if ok else 3)
+except Exception:
+    sys.exit(4)
+PY
 }
 
 # Derive arch list directly from Torch; optional +PTX via SAGE_PTX_FALLBACK=1
@@ -165,7 +184,6 @@ build_sage_attention_mixed() {
     local jobs; jobs="$(decide_build_jobs)"
     log "Using MAX_JOBS=${jobs} for SageAttention build"
 
-    # Set MAX_JOBS only for this build call to avoid leaking globally
     if MAX_JOBS="${jobs}" python -m pip install --user --no-build-isolation .; then
         echo "$SAGE_STRATEGY|$TORCH_CUDA_ARCH_LIST" > "$SAGE_ATTENTION_BUILT_FLAG"
         log "SageAttention built successfully"
@@ -203,7 +221,6 @@ setup_sage_attention() {
     if ! detect_gpu_generations; then log "No GPUs detected, skipping SageAttention setup"; return 0; fi
     determine_sage_strategy
 
-    # Resolve arch list early
     export TORCH_CUDA_ARCH_LIST="${SAGE_ARCH_LIST_OVERRIDE:-$(compute_arch_list_from_torch)}"
     if [ -z "$TORCH_CUDA_ARCH_LIST" ]; then
         local tmp=""
@@ -245,61 +262,110 @@ if [ "$(id -u)" = "0" ]; then
         mkdir -p "/home/${APP_USER}"
         for d in "$BASE_DIR" "/home/$APP_USER"; do [ -e "$d" ] && chown -R "${APP_USER}:${APP_GROUP}" "$d" || true; done
 
+        # Discover both system and user site dirs and make them writable by the runtime user
         readarray -t PY_PATHS < <(python - <<'PY'
-import sys, sysconfig, os, datetime
+import sys, sysconfig, os, site, datetime
 def log(m): print(f"[bootstrap:python {datetime.datetime.now().strftime('%H:%M:%S')}] {m}", file=sys.stderr, flush=True)
-log("Determining writable Python install targets via sysconfig.get_paths()")
+log("Determining writable Python install targets via sysconfig.get_paths(), site.getsitepackages(), and site.getusersitepackages()")
+seen=set()
 for k in ("purelib","platlib","scripts","include","platinclude","data"):
     v = sysconfig.get_paths().get(k)
-    if v: print(v); log(f"emit {k} -> {v}")
+    if v and v.startswith("/usr/local") and v not in seen:
+        print(v); seen.add(v); log(f"emit {k} -> {v}")
+for v in (site.getusersitepackages(),):
+    if v and v not in seen:
+        print(v); seen.add(v); log(f"emit usersite -> {v}")
+for v in site.getsitepackages():
+    if v and v.startswith("/usr/local") and v not in seen:
+        print(v); seen.add(v); log(f"emit sitepkg -> {v}")
 d = sysconfig.get_paths().get("data")
 if d:
     share=os.path.join(d,"share"); man1=os.path.join(share,"man","man1")
-    print(share); print(man1); log(f"emit wheel data dirs -> {share}, {man1}")
+    for v in (share, man1):
+        if v and v.startswith("/usr/local") and v not in seen:
+            print(v); seen.add(v); log(f"emit wheel data -> {v}")
 PY
 )
         for d in "${PY_PATHS[@]}"; do
-            case "$d" in
-                /usr/local|/usr/local/*) mkdir -p "$d" || true; chown -R "${APP_USER}:${APP_GROUP}" "$d" || true; chmod -R u+rwX,g+rwX "$d" || true ;;
-                *) : ;;
-            esac
+            [ -n "$d" ] || continue
+            mkdir -p "$d" || true
+            chown -R "${APP_USER}:${APP_GROUP}" "$d" || true
+            chmod -R u+rwX,g+rwX "$d" || true
         done
+
+        # Also ensure the main site-packages tree is writable if present (guards numpy uninstall/upgrade)
+        if [ -d "/usr/local/lib/python3.12/site-packages" ]; then
+            chown -R "${APP_USER}:${APP_GROUP}" /usr/local/lib/python3.12/site-packages || true
+            chmod -R u+rwX,g+rwX /usr/local/lib/python3.12/site-packages || true
+        fi
+
         touch "$PERMISSIONS_SET_FLAG"; chown "${APP_USER}:${APP_GROUP}" "$PERMISSIONS_SET_FLAG"
         log "User permissions configured"
-    else log "User permissions already configured, skipping..."; fi
+    else
+        log "User permissions already configured, skipping..."
+    fi
     exec runuser -u "${APP_USER}" -- "$0" "$@"
 fi
 
-# --- SageAttention setup ---
+# From here on, running as $APP_USER
+
+# Favor user installs everywhere to avoid touching system packages
+export PATH="$HOME/.local/bin:$PATH"
+pyver="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+export PYTHONPATH="$HOME/.local/lib/python${pyver}/site-packages:${PYTHONPATH:-}"
+export PIP_USER=1
+export PIP_PREFER_BINARY=1
+
+# Abort early if no compatible NVIDIA GPU (>= sm_75) is present
+if ! gpu_is_compatible; then
+    log "No compatible NVIDIA GPU detected (compute capability 7.5+ required). Shutting down container."
+    # Exit 0 to avoid restart loops in some runtimes
+    exit 0
+fi
+
+# --- SageAttention setup (runs only if compatible GPU is present) ---
 setup_sage_attention
 
 # --- ComfyUI-Manager sync ---
 if [ -d "$CUSTOM_NODES_DIR/ComfyUI-Manager/.git" ]; then
-    log "Updating ComfyUI-Manager"; git -C "$CUSTOM_NODES_DIR/ComfyUI-Manager" fetch --depth 1 origin || true
-    git -C "$CUSTOM_NODES_DIR/ComfyUI-Manager" reset --hard origin/HEAD || true; git -C "$CUSTOM_NODES_DIR/ComfyUI-Manager" clean -fdx || true
+    log "Updating ComfyUI-Manager"
+    git -C "$CUSTOM_NODES_DIR/ComfyUI-Manager" fetch --depth 1 origin || true
+    git -C "$CUSTOM_NODES_DIR/ComfyUI-Manager" reset --hard origin/HEAD || true
+    git -C "$CUSTOM_NODES_DIR/ComfyUI-Manager" clean -fdx || true
 elif [ ! -d "$CUSTOM_NODES_DIR/ComfyUI-Manager" ]; then
-    log "Installing ComfyUI-Manager"; git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git "$CUSTOM_NODES_DIR/ComfyUI-Manager" || true
+    log "Installing ComfyUI-Manager"
+    git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git "$CUSTOM_NODES_DIR/ComfyUI-Manager" || true
 fi
-
-# --- PATH/PYTHONPATH  ---
-export PATH="$HOME/.local/bin:$PATH"
-pyver="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-export PYTHONPATH="$HOME/.local/lib/python${pyver}/site-packages:${PYTHONPATH:-}"
 
 # --- first-run install of custom_nodes ---
 if [ ! -f "$FIRST_RUN_FLAG" ] || [ "${COMFY_FORCE_INSTALL:-0}" = "1" ]; then
     if [ "${COMFY_AUTO_INSTALL:-1}" = "1" ]; then
         log "First run or forced; installing custom node dependencies..."
+
+        # 1) Install requirements files (Manager-like behavior)
         while IFS= read -r -d '' req; do
-            log "python -m pip install --user --upgrade -r $req"
+            log "python -m pip install --user --upgrade --upgrade-strategy only-if-needed -r $req"
             python -m pip install --no-cache-dir --user --upgrade --upgrade-strategy only-if-needed -r "$req" || true
         done < <(find "$CUSTOM_NODES_DIR" -maxdepth 3 -type f \( -iname 'requirements.txt' -o -iname 'requirements-*.txt' -o -path '*/requirements/*.txt' \) -print0)
+
+        # 2) Install from pyproject (editable build avoided to mimic Manager’s typical install)
         while IFS= read -r -d '' pjt; do
-            d="$(dirname "$pjt")"; log "python -m pip install --user . in $d"
+            d="$(dirname "$pjt")"
+            log "python -m pip install --user . in $d"
             (cd "$d" && python -m pip install --no-cache-dir --user .) || true
         done < <(find "$CUSTOM_NODES_DIR" -maxdepth 2 -type f -iname 'pyproject.toml' -not -path '*/ComfyUI-Manager/*' -print0)
+
+        # 3) Run node-provided install.py if present (Manager runs install scripts; mirror that)
+        while IFS= read -r -d '' inst; do
+            d="$(dirname "$inst")"
+            log "Running node install script: $inst"
+            (cd "$d" && python "$inst") || true
+        done < <(find "$CUSTOM_NODES_DIR" -maxdepth 2 -type f -iname 'install.py' -not -path '*/ComfyUI-Manager/*' -print0)
+
         python -m pip check || true
-    else log "COMFY_AUTO_INSTALL=0; skipping dependency install"; fi
+    else
+        log "COMFY_AUTO_INSTALL=0; skipping dependency install"
+    fi
     touch "$FIRST_RUN_FLAG"
 else
     log "Not first run; skipping custom_nodes dependency install"
@@ -316,8 +382,12 @@ else
 fi
 
 cd "$BASE_DIR"
-if [ $# -eq 0 ]; then exec python main.py --listen 0.0.0.0 $COMFYUI_ARGS
+if [ $# -eq 0 ]; then
+    exec python main.py --listen 0.0.0.0 $COMFYUI_ARGS
 else
-    if [ "$1" = "python" ] && [ "${2:-}" = "main.py" ]; then shift 2; exec python main.py $COMFYUI_ARGS "$@"
-    else exec "$@"; fi
+    if [ "$1" = "python" ] && [ "${2:-}" = "main.py" ]; then
+        shift 2; exec python main.py $COMFYUI_ARGS "$@"
+    else
+        exec "$@"
+    fi
 fi
