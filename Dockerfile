@@ -88,9 +88,10 @@ WORKDIR /app/ComfyUI
 # Copy requirements with optional handling
 COPY requirements.txt* ./
 
-# Core Python deps (torch CUDA 12.9, ComfyUI reqs), media/NVML libs
+# Core Python deps (torch CUDA 12.9, ComfyUI reqs), media/NVML libs, and CuPy (CUDA 12.x wheel)
 RUN python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129 \
  && python -m pip install triton \
+ && python -m pip install --prefer-binary cupy-cuda12x \
  && if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi \
  && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py
 
