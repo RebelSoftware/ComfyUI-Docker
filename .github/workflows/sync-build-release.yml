@@ -24,7 +24,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Install prerequisites (jq, curl, git)
+      - name: Install prerequisites (jq, curl, gh, git)
         run: |
           set -e
           if ! command -v jq >/dev/null 2>&1; then
@@ -39,46 +39,32 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-      
-          # 1) Upstream latest release tag (e.g., v0.3.59)
+          # Latest upstream release tag (e.g., v0.3.59)
           LATEST_TAG=$(gh api repos/comfyanonymous/ComfyUI/releases/latest --jq .tag_name)
-      
-          # 2) Parse upstream comfyui_version.py from the current upstream default branch
-          git remote add upstream https://github.com/comfyanonymous/ComfyUI.git 2>/dev/null || git remote set-url upstream https://github.com/comfyanonymous/ComfyUI.git
+          # Fetch comfyui_version.py from upstream default branch
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/comfyanonymous/ComfyUI.git
+          else
+            git remote add upstream https://github.com/comfyanonymous/ComfyUI.git
+          fi
           git fetch upstream --depth=1
-          FILE_VER=$(git show upstream/master:comfyui_version.py | sed -n 's/^__version__ = "\(.*\)"/\1/p' | tr -d '\r')
-      
-          # Normalize release tag to bare version (strip leading 'v')
+          FILE_VER=$(git show upstream/master:comfyui_version.py | sed -n 's/^__version__ = "\(.*\)"/\1/p' | tr -d '\r' || true)
           LATEST_VER="${LATEST_TAG#v}"
-      
-          # 3) Only consider it "new" if the release tag matches the version file (avoid early bumps)
           CANDIDATE="none"
           if [ -n "${LATEST_TAG}" ] && [ "${LATEST_TAG}" != "null" ] && [ -n "${FILE_VER}" ] && [ "${FILE_VER}" = "${LATEST_VER}" ]; then
-            CANDIDATE="${LATEST_TAG}"
-          fi
-      
-          # 4) Skip if this repo already has a release at that tag
-          if [ "${CANDIDATE}" != "none" ]; then
+            # ensure no existing release with same tag in this repo
             SELF_TAG=$(gh api repos/${GITHUB_REPOSITORY}/releases/latest --jq .tag_name 2>/dev/null || echo "none")
-            if [ "${SELF_TAG}" = "${CANDIDATE}" ]; then
-              CANDIDATE="none"
+            if [ "${SELF_TAG}" != "${LATEST_TAG}" ]; then
+              CANDIDATE="${LATEST_TAG}"
             fi
           fi
-      
           echo "new_version=${CANDIDATE}" >> "$GITHUB_OUTPUT"
 
-      - name: Cleanup workspace (always, scoped)
-        if: ${{ always() }}
-        run: |
-          set -euxo pipefail
-          rm -rf "${GITHUB_WORKSPACE:?}/"* "${GITHUB_WORKSPACE:?}/."[!.]* 2>/dev/null || true
-  
   build-gh:
     name: Build on GitHub Runner (primary)
     needs: check-upstream
     if: needs.check-upstream.outputs.new_version != 'none'
     runs-on: ubuntu-latest
-    continue-on-error: true
     outputs:
       built:  ${{ steps.mark.outputs.built }}
       digest: ${{ steps.build.outputs.digest }}
@@ -105,10 +91,32 @@ jobs:
           git fetch upstream
           git checkout master
           git merge --no-commit --no-ff upstream/master --allow-unrelated-histories || true
-          git checkout --ours README.md
-          git add README.md
+          git checkout --ours README.md || true
+          git add README.md || true
           git commit -m "Merge upstream/master, keep local README.md" || true
           git push origin master
+
+      - name: Show disk usage (pre)
+        run: df -h | sed 's/\s\+/ /g'
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Prune Docker caches (pre)
+        run: |
+          docker builder prune -af || true
+          docker system prune -af --volumes || true
+
+      - name: Show disk usage (post-clean)
+        run: df -h | sed 's/\s\+/ /g'
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -141,14 +149,6 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.CR_PAT }}
 
-      - name: Free disk space (best effort)
-        continue-on-error: true
-        run: |
-          sudo docker system prune -af || true
-          sudo rm -rf /usr/local/lib/android || true
-          sudo rm -rf /opt/ghc || true
-          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
-
       - name: Build and Push (GH runner)
         id: build
         uses: docker/build-push-action@v6
@@ -159,13 +159,15 @@ jobs:
           push: true
           provenance: false
           sbom: false
+          cache-from: type=gha,scope=gh
+          cache-to: type=gha,mode=max,scope=gh
           tags: |
             ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
             ${{ env.IMAGE_NAME }}:latest
 
       - name: Mark build success
         id: mark
-        if: ${{ success() && steps.build.outputs.digest != '' }}
+        if: ${{ steps.build.outcome == 'success' && steps.build.outputs.digest != '' }}
         run: echo "built=true" >> "$GITHUB_OUTPUT"
 
   build-self:
@@ -199,8 +201,8 @@ jobs:
           git fetch upstream
           git checkout master
           git merge --no-commit --no-ff upstream/master --allow-unrelated-histories || true
-          git checkout --ours README.md
-          git add README.md
+          git checkout --ours README.md || true
+          git add README.md || true
           git commit -m "Merge upstream/master, keep local README.md" || true
           git push origin master
 
@@ -251,23 +253,8 @@ jobs:
 
       - name: Mark build success
         id: mark
-        if: ${{ success() && steps.build.outputs.digest != '' }}
+        if: ${{ steps.build.outcome == 'success' && steps.build.outputs.digest != '' }}
         run: echo "built=true" >> "$GITHUB_OUTPUT"
-
-      - name: Remove BuildKit image (moby/buildkit)
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          set -euxo pipefail
-          docker image rm -f $(docker images 'moby/buildkit*' -q) 2>/dev/null || true
-
-      - name: Cleanup (always, scoped)
-        if: ${{ always() }}
-        run: |
-          set -euxo pipefail
-          docker buildx prune -af || true
-          docker image prune -af --filter "until=168h" || true
-          rm -rf "${GITHUB_WORKSPACE:?}/"* "${GITHUB_WORKSPACE:?}/."[!.]* 2>/dev/null || true
 
   publish:
     name: Publish Release
