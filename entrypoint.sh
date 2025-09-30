@@ -20,7 +20,6 @@ log() { echo "[$(date '+%H:%M:%S')] $1"; }
 umask 0002
 
 # --- build parallelism (single knob) ---
-# Public knob: SAGE_MAX_JOBS. If unset, pick RAM/CPU heuristic.
 decide_build_jobs() {
     if [ -n "${SAGE_MAX_JOBS:-}" ]; then echo "$SAGE_MAX_JOBS"; return; fi
     local mem_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
@@ -34,104 +33,68 @@ decide_build_jobs() {
     echo "$jobs"
 }
 
-# --- CUDA/Torch checks ---
-test_pytorch_cuda() {
-    python -c "
-import torch, sys
-if not torch.cuda.is_available():
-    print('[ERROR] PyTorch CUDA not available'); sys.exit(1)
-c=torch.cuda.device_count(); print(f'[TEST] PyTorch CUDA available with {c} devices')
-for i in range(c):
-    p=torch.cuda.get_device_properties(i)
-    print(f'[TEST] GPU {i}: {p.name} (Compute {p.major}.{p.minor})')
-" 2>/dev/null
-}
-
-# Determine if there is a compatible NVIDIA GPU (>= sm_75, i.e., 16-series/Turing and newer)
-gpu_is_compatible() {
-    python - <<'PY' 2>/dev/null
-import sys
-try:
-    import torch
-    if not torch.cuda.is_available():
-        sys.exit(2)
-    ok=False
-    for i in range(torch.cuda.device_count()):
-        p=torch.cuda.get_device_properties(i)
-        cc=float(f"{p.major}.{p.minor}")
-        if cc >= 7.5:
-            ok=True
-    sys.exit(0 if ok else 3)
-except Exception:
-    sys.exit(4)
-PY
-}
-
-# Derive arch list directly from Torch; optional +PTX via SAGE_PTX_FALLBACK=1
-compute_arch_list_from_torch() {
-    python - <<'PY' 2>/dev/null
+# --- unified GPU probe (torch-based) ---
+probe_and_prepare_gpu() {
+python - <<'PY' 2>/dev/null
 import os, sys
 try:
     import torch
-    if not torch.cuda.is_available():
-        print(""); sys.exit(0)
-    caps = {f"{torch.cuda.get_device_properties(i).major}.{torch.cuda.get_device_properties(i).minor}"
-            for i in range(torch.cuda.device_count())}
-    ordered = sorted(caps, key=lambda s: tuple(int(x) for x in s.split(".")))
-    if not ordered: print(""); sys.exit(0)
-    if os.environ.get("SAGE_PTX_FALLBACK","0")=="1":
-        highest = ordered[-1]; print(";".join(ordered+[highest + "+PTX"]))
-    else:
-        print(";".join(ordered))
 except Exception:
-    print("")
+    print("GPU_COUNT=0"); print("COMPAT_GE_75=0"); print("TORCH_CUDA_ARCH_LIST=''")
+    print("DET_TURING=false"); print("DET_AMP80=false"); print("DET_AMP86=false"); print("DET_AMP87=false")
+    print("DET_ADA=false"); print("DET_HOPPER=false"); print("DET_BW12=false"); print("DET_BW10=false")
+    print("SAGE_STRATEGY='fallback'"); sys.exit(0)
+if not torch.cuda.is_available():
+    print("GPU_COUNT=0"); print("COMPAT_GE_75=0"); print("TORCH_CUDA_ARCH_LIST=''")
+    print("DET_TURING=false"); print("DET_AMP80=false"); print("DET_AMP86=false"); print("DET_AMP87=false")
+    print("DET_ADA=false"); print("DET_HOPPER=false"); print("DET_BW12=false"); print("DET_BW10=false")
+    print("SAGE_STRATEGY='fallback'"); sys.exit(0)
+n = torch.cuda.device_count()
+ccs = []
+flags = {"DET_TURING":False,"DET_AMP80":False,"DET_AMP86":False,"DET_AMP87":False,"DET_ADA":False,"DET_HOPPER":False,"DET_BW12":False,"DET_BW10":False}
+compat = False
+for i in range(n):
+    p = torch.cuda.get_device_properties(i)
+    mj, mn = p.major, p.minor
+    ccs.append(f"{mj}.{mn}")
+    if (mj,mn)==(7,5): flags["DET_TURING"]=True
+    elif (mj,mn)==(8,0): flags["DET_AMP80"]=True
+    elif (mj,mn)==(8,6): flags["DET_AMP86"]=True
+    elif (mj,mn)==(8,7): flags["DET_AMP87"]=True
+    elif (mj,mn)==(8,9): flags["DET_ADA"]=True
+    elif (mj,mn)==(9,0): flags["DET_HOPPER"]=True
+    elif (mj,mn)==(10,0): flags["DET_BW10"]=True
+    elif (mj,mn)==(12,0): flags["DET_BW12"]=True
+    if (mj*10+mn) >= 75:
+        compat = True
+ordered = sorted(set(ccs), key=lambda s: tuple(map(int, s.split("."))))
+arch_list = ";".join(ordered) if ordered else ""
+if flags["DET_TURING"]:
+    if any(flags[k] for k in ["DET_AMP80","DET_AMP86","DET_AMP87","DET_ADA","DET_HOPPER","DET_BW12","DET_BW10"]):
+        strategy = "mixed_with_turing"
+    else:
+        strategy = "turing_only"
+elif flags["DET_BW12"] or flags["DET_BW10"]:
+    strategy = "blackwell_capable"
+elif flags["DET_HOPPER"]:
+    strategy = "hopper_capable"
+elif flags["DET_ADA"] or flags["DET_AMP86"] or flags["DET_AMP87"] or flags["DET_AMP80"]:
+    strategy = "ampere_ada_optimized"
+else:
+    strategy = "fallback"
+print(f"GPU_COUNT={n}")
+print(f"COMPAT_GE_75={1 if compat else 0}")
+print(f"TORCH_CUDA_ARCH_LIST='{arch_list}'")
+for k,v in flags.items():
+    print(f"{k}={'true' if v else 'false'}")
+print(f"SAGE_STRATEGY='{strategy}'")
+print(f"[GPU] Found {n} CUDA device(s); CC list: {arch_list or 'none'}; strategy={strategy}; compat>={7.5}:{compat}", file=sys.stderr)
 PY
 }
 
-# Fallback name-based mapping across Turing→Blackwell
-detect_gpu_generations() {
-    local info=$(nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null || echo "")
-    local has_turing=false has_amp_ga100=false has_amp_ga10x=false has_amp_ga10b=false
-    local has_ada=false has_hopper=false has_bw_cons=false has_bw_dc=false
-    local n=0
-    [ -z "$info" ] && { log "No NVIDIA GPUs detected"; return 1; }
-    log "Detecting GPU generations:"
-    while IFS= read -r g; do
-        n=$((n+1)); log "  GPU $n: $g"
-        case "$g" in
-            *"RTX 20"*|*"T4"*) has_turing=true ;;
-            *"A100"*|*"A30"*|*"A40"*) has_amp_ga100=true ;;
-            *"RTX 30"*|*"RTX 3090"*|*"RTX 3080"*|*"RTX 3070"*|*"RTX 3060"*) has_amp_ga10x=true ;;
-            *"Orin"*|*"Jetson"*) has_amp_ga10b=true ;;
-            *"RTX 40"*|*"4090"*|*"L40"*|*"L4"*) has_ada=true ;;
-            *"H100"*|*"H200"*|*"GH200"*) has_hopper=true ;;
-            *"RTX 50"*|*"5090"*|*"5080"*|*"5070"*|*"5060"*|*"PRO "*Blackwell*|*"PRO 4000 Blackwell"*) has_bw_cons=true ;;
-            *"B200"*|*"B100"*|*"GB200"*|*"B40"*|*"RTX 6000 Blackwell"*|*"RTX 5000 Blackwell"*) has_bw_dc=true ;;
-        esac
-    done <<< "$info"
-    export DET_TURING=$has_turing DET_AMP80=$has_amp_ga100 DET_AMP86=$has_amp_ga10x DET_AMP87=$has_amp_ga10b
-    export DET_ADA=$has_ada DET_HOPPER=$has_hopper DET_BW12=$has_bw_cons DET_BW10=$has_bw_dc
-    export GPU_COUNT=$n
-    log "Summary: Turing=$has_turing Amp(8.0)=$has_amp_ga100 Amp(8.6)=$has_amp_ga10x Amp(8.7)=$has_amp_ga10b Ada=$has_ada Hopper=$has_hopper Blackwell(12.x)=$has_bw_cons Blackwell(10.0)=$has_bw_dc"
-    test_pytorch_cuda && log "PyTorch CUDA compatibility confirmed" || log "WARNING: PyTorch CUDA compatibility issues detected"
-}
-
-determine_sage_strategy() {
-    local s=""
-    if [ "${DET_TURING:-false}" = "true" ]; then
-        if [ "${DET_AMP80:-false}" = "true" ] || [ "${DET_AMP86:-false}" = "true" ] || [ "${DET_AMP87:-false}" = "true" ] || [ "${DET_ADA:-false}" = "true" ] || [ "${DET_HOPPER:-false}" = "true" ] || [ "${DET_BW12:-false}" = "true" ] || [ "${DET_BW10:-false}" = "true" ]; then
-            s="mixed_with_turing"; log "Mixed rig including Turing - using compatibility mode"
-        else s="turing_only"; log "Turing-only rig detected"; fi
-    elif [ "${DET_BW12:-false}" = "true" ] || [ "${DET_BW10:-false}" = "true" ]; then s="blackwell_capable"; log "Blackwell detected - using latest optimizations"
-    elif [ "${DET_HOPPER:-false}" = "true" ]; then s="hopper_capable"; log "Hopper detected - using modern optimizations"
-    elif [ "${DET_ADA:-false}" = "true" ] || [ "${DET_AMP86:-false}" = "true" ] || [ "${DET_AMP87:-false}" = "true" ] || [ "${DET_AMP80:-false}" = "true" ]; then
-        s="ampere_ada_optimized"; log "Ampere/Ada detected - using standard optimizations"
-    else s="fallback"; log "Unknown configuration - using fallback"; fi
-    export SAGE_STRATEGY=$s
-}
-
+# --- install triton versions based on strategy ---
 install_triton_version() {
-    case "$SAGE_STRATEGY" in
+    case "${SAGE_STRATEGY:-fallback}" in
         "mixed_with_turing"|"turing_only")
             log "Installing Triton 3.2.0 for Turing compatibility"
             python -m pip install --user --force-reinstall "triton==3.2.0" || python -m pip install --user --force-reinstall triton || true
@@ -150,24 +113,13 @@ install_triton_version() {
 build_sage_attention_mixed() {
     log "Building Sage Attention..."
     mkdir -p "$SAGE_ATTENTION_DIR"; cd "$SAGE_ATTENTION_DIR"
-
-    local arch_list="${SAGE_ARCH_LIST_OVERRIDE:-$(compute_arch_list_from_torch)}"
-    if [ -z "$arch_list" ]; then
-        local tmp=""
-        [ "${DET_TURING:-false}" = "true" ] && tmp="${tmp}7.5;"
-        [ "${DET_AMP80:-false}" = "true" ] && tmp="${tmp}8.0;"
-        [ "${DET_AMP86:-false}" = "true" ] && tmp="${tmp}8.6;"
-        [ "${DET_AMP87:-false}" = "true" ] && tmp="${tmp}8.7;"
-        [ "${DET_ADA:-false}" = "true" ] && tmp="${tmp}8.9;"
-        [ "${DET_HOPPER:-false}" = "true" ] && tmp="${tmp}9.0;"
-        [ "${DET_BW10:-false}" = "true" ] && tmp="${tmp}10.0;"
-        [ "${DET_BW12:-false}" = "true" ] && tmp="${tmp}12.0;"
-        arch_list="${tmp%;}"
+    export TORCH_CUDA_ARCH_LIST="${SAGE_ARCH_LIST_OVERRIDE:-${TORCH_CUDA_ARCH_LIST:-}}"
+    if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ]; then
+        TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0"
     fi
-    export TORCH_CUDA_ARCH_LIST="$arch_list"
     log "Set TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST"
 
-    case "$SAGE_STRATEGY" in
+    case "${SAGE_STRATEGY:-fallback}" in
         "mixed_with_turing"|"turing_only")
             log "Cloning SageAttention v1.0 for Turing"
             if [ -d "SageAttention/.git" ]; then cd SageAttention; git fetch --depth 1 origin || return 1; git checkout v1.0 2>/dev/null || git checkout -b v1.0 origin/v1.0 || return 1; git reset --hard origin/v1.0 || return 1
@@ -185,7 +137,7 @@ build_sage_attention_mixed() {
     log "Using MAX_JOBS=${jobs} for SageAttention build"
 
     if MAX_JOBS="${jobs}" python -m pip install --user --no-build-isolation .; then
-        echo "$SAGE_STRATEGY|$TORCH_CUDA_ARCH_LIST" > "$SAGE_ATTENTION_BUILT_FLAG"
+        echo "${SAGE_STRATEGY:-fallback}|${TORCH_CUDA_ARCH_LIST:-}" > "$SAGE_ATTENTION_BUILT_FLAG"
         log "SageAttention built successfully"
         cd "$BASE_DIR"; return 0
     else
@@ -198,7 +150,7 @@ needs_rebuild() {
     if [ ! -f "$SAGE_ATTENTION_BUILT_FLAG" ]; then return 0; fi
     local x; x=$(cat "$SAGE_ATTENTION_BUILT_FLAG" 2>/dev/null || echo "")
     local prev_strategy="${x%%|*}"; local prev_arch="${x#*|}"
-    if [ "$prev_strategy" != "$SAGE_STRATEGY" ] || [ "$prev_arch" != "$TORCH_CUDA_ARCH_LIST" ]; then return 0; fi
+    if [ "$prev_strategy" != "${SAGE_STRATEGY:-fallback}" ] || [ "$prev_arch" != "${TORCH_CUDA_ARCH_LIST:-}" ]; then return 0; fi
     return 1
 }
 
@@ -218,24 +170,8 @@ except Exception as e:
 
 setup_sage_attention() {
     export SAGE_ATTENTION_BUILT=0 SAGE_ATTENTION_AVAILABLE=0
-    if ! detect_gpu_generations; then log "No GPUs detected, skipping SageAttention setup"; return 0; fi
-    determine_sage_strategy
-
-    export TORCH_CUDA_ARCH_LIST="${SAGE_ARCH_LIST_OVERRIDE:-$(compute_arch_list_from_torch)}"
-    if [ -z "$TORCH_CUDA_ARCH_LIST" ]; then
-        local tmp=""
-        [ "${DET_TURING:-false}" = "true" ] && tmp="${tmp}7.5;"
-        [ "${DET_AMP80:-false}" = "true" ] && tmp="${tmp}8.0;"
-        [ "${DET_AMP86:-false}" = "true" ] && tmp="${tmp}8.6;"
-        [ "${DET_AMP87:-false}" = "true" ] && tmp="${tmp}8.7;"
-        [ "${DET_ADA:-false}" = "true" ] && tmp="${tmp}8.9;"
-        [ "${DET_HOPPER:-false}" = "true" ] && tmp="${tmp}9.0;"
-        [ "${DET_BW10:-false}" = "true" ] && tmp="${tmp}10.0;"
-        [ "${DET_BW12:-false}" = "true" ] && tmp="${tmp}12.0;"
-        export TORCH_CUDA_ARCH_LIST="${tmp%;}"
-    fi
-    log "Resolved TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST"
-
+    if [ "${GPU_COUNT:-0}" -eq 0 ]; then log "No GPUs detected, skipping SageAttention setup"; return 0; fi
+    if [ "${COMPAT_GE_75:-0}" -ne 1 ]; then log "GPU compute capability < 7.5; skipping SageAttention"; return 0; fi
     if needs_rebuild || ! test_sage_attention; then
         log "Building SageAttention..."
         if install_triton_version && build_sage_attention_mixed && test_sage_attention; then
@@ -262,7 +198,6 @@ if [ "$(id -u)" = "0" ]; then
         mkdir -p "/home/${APP_USER}"
         for d in "$BASE_DIR" "/home/$APP_USER"; do [ -e "$d" ] && chown -R "${APP_USER}:${APP_GROUP}" "$d" || true; done
 
-        # Discover both system and user site dirs and make them writable by the runtime user
         readarray -t PY_PATHS < <(python - <<'PY'
 import sys, sysconfig, os, site, datetime
 def log(m): print(f"[bootstrap:python {datetime.datetime.now().strftime('%H:%M:%S')}] {m}", file=sys.stderr, flush=True)
@@ -293,7 +228,6 @@ PY
             chmod -R u+rwX,g+rwX "$d" || true
         done
 
-        # Also ensure the main site-packages tree is writable if present (guards numpy uninstall/upgrade)
         if [ -d "/usr/local/lib/python3.12/site-packages" ]; then
             chown -R "${APP_USER}:${APP_GROUP}" /usr/local/lib/python3.12/site-packages || true
             chmod -R u+rwX,g+rwX /usr/local/lib/python3.12/site-packages || true
@@ -309,20 +243,42 @@ fi
 
 # From here on, running as $APP_USER
 
-# Favor user installs everywhere to avoid touching system packages
 export PATH="$HOME/.local/bin:$PATH"
 pyver="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 export PYTHONPATH="$HOME/.local/lib/python${pyver}/site-packages:${PYTHONPATH:-}"
 export PIP_USER=1
 export PIP_PREFER_BINARY=1
 
-# Abort early if no compatible NVIDIA GPU (>= sm_75) is present
-if ! gpu_is_compatible; then
-    log "No compatible NVIDIA GPU detected (compute capability 7.5+ required). Shutting down container."
+# --- single GPU probe + early exit ---
+eval "$(probe_and_prepare_gpu)"
+if [ "${GPU_COUNT:-0}" -eq 0 ] || [ "${COMPAT_GE_75:-0}" -ne 1 ]; then
+    log "No compatible NVIDIA GPU (compute capability >= 7.5) detected; shutting down."
     exit 0
 fi
 
-# --- SageAttention setup (runs only if compatible GPU is present) ---
+# --- Ensure package managers and Manager deps are available ---
+# 1) Ensure python -m pip works (bootstrap if needed)
+python -m pip --version >/dev/null 2>&1 || python -m ensurepip --upgrade >/dev/null 2>&1 || true
+python -m pip --version >/dev/null 2>&1 || log "WARNING: pip still not available after ensurepip"
+
+# 2) Ensure uv exists system-wide (fast path for Manager)
+if ! command -v uv >/dev/null 2>&1; then
+    log "Installing uv (system-wide) for ComfyUI-Manager support..."
+    wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="/usr/local/bin" UV_NO_MODIFY_PATH=1 sh || true
+    command -v uv >/dev/null 2>&1 || log "WARNING: uv installation failed; Manager will fallback to pip"
+fi
+
+# 3) Ensure ComfyUI-Manager minimal Python deps
+python - <<'PY' || python -m pip install --no-cache-dir --user toml || true
+import sys
+try:
+    import toml  # noqa
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+PY
+
+# --- SageAttention setup using probed data ---
 setup_sage_attention
 
 # --- ComfyUI-Manager sync ---
@@ -340,26 +296,21 @@ fi
 if [ ! -f "$FIRST_RUN_FLAG" ] || [ "${COMFY_FORCE_INSTALL:-0}" = "1" ]; then
     if [ "${COMFY_AUTO_INSTALL:-1}" = "1" ]; then
         log "First run or forced; installing custom node dependencies..."
-
-        # Manager-like behavior: per-node, top-level requirements.txt only, plus optional install.py;
         shopt -s nullglob
         for d in "$CUSTOM_NODES_DIR"/*; do
             [ -d "$d" ] || continue
             base="$(basename "$d")"
             [ "$base" = "ComfyUI-Manager" ] && continue
-
             if [ -f "$d/requirements.txt" ]; then
                 log "Installing requirements for node: $base"
                 python -m pip install --no-cache-dir --user --upgrade --upgrade-strategy only-if-needed -r "$d/requirements.txt" || true
             fi
-
             if [ -f "$d/install.py" ]; then
                 log "Running install.py for node: $base"
                 (cd "$d" && python "install.py") || true
             fi
         done
         shopt -u nullglob
-
         python -m pip check || true
     else
         log "COMFY_AUTO_INSTALL=0; skipping dependency install"
@@ -368,6 +319,25 @@ if [ ! -f "$FIRST_RUN_FLAG" ] || [ "${COMFY_FORCE_INSTALL:-0}" = "1" ]; then
 else
     log "Not first run; skipping custom_nodes dependency install"
 fi
+
+# --- Ensure ONNX Runtime has CUDA provider (GPU) ---
+python - <<'PY' || {
+import sys
+try:
+    import onnxruntime as ort
+    ok = "CUDAExecutionProvider" in ort.get_available_providers()
+    sys.exit(0 if ok else 1)
+except Exception:
+    sys.exit(1)
+PY
+    log "Installing onnxruntime-gpu for CUDAExecutionProvider..."
+    python -m pip uninstall -y onnxruntime || true
+    python -m pip install --no-cache-dir --user "onnxruntime-gpu>=1.19" || true
+    python - <<'P2' || log "WARNING: ONNX Runtime CUDA provider not available after installation"
+import onnxruntime as ort, sys
+print("ORT providers:", ort.get_available_providers())
+sys.exit(0 if "CUDAExecutionProvider" in ort.get_available_providers() else 1)
+P2
 
 # --- launch ComfyUI ---
 COMFYUI_ARGS=""
