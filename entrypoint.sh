@@ -22,8 +22,10 @@ umask 0002
 # --- build parallelism (single knob) ---
 decide_build_jobs() {
     if [ -n "${SAGE_MAX_JOBS:-}" ]; then echo "$SAGE_MAX_JOBS"; return; fi
-    local mem_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
-    local cpu=$(nproc) cap=24 jobs
+    local mem_kb
+    mem_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    local cpu cap jobs
+    cpu=$(nproc) cap=24
     if   [ "$mem_kb" -le $((8*1024*1024)) ];  then jobs=2
     elif [ "$mem_kb" -le $((12*1024*1024)) ]; then jobs=3
     elif [ "$mem_kb" -le $((24*1024*1024)) ]; then jobs=4
@@ -158,7 +160,7 @@ test_sage_attention() {
     python -c "
 import sys
 try:
-    import sageattention; print('[TEST] SageAttention import: SUCCESS')
+    import sageattention; print('[TEST] SageAttention import: SUCCESS]')
     v=getattr(sageattention,'__version__',None)
     if v: print(f'[TEST] Version: {v}'); sys.exit(0)
 except ImportError as e:
@@ -262,7 +264,7 @@ python -m pip --version >/dev/null 2>&1 || python -m ensurepip --upgrade >/dev/n
 python -m pip --version >/dev/null 2>&1 || log "WARNING: pip still not available after ensurepip"
 
 # Ensure ComfyUI-Manager minimal Python deps
-python - <<'PY' || python -m pip install --no-cache-dir --user toml || true
+python - <<'PY'
 import sys
 try:
     import toml  # noqa
@@ -270,6 +272,9 @@ try:
 except Exception:
     sys.exit(1)
 PY
+if [ $? -ne 0 ]; then
+    python -m pip install --no-cache-dir --user toml || true
+fi
 
 # --- SageAttention setup using probed data ---
 setup_sage_attention
@@ -312,25 +317,6 @@ if [ ! -f "$FIRST_RUN_FLAG" ] || [ "${COMFY_FORCE_INSTALL:-0}" = "1" ]; then
 else
     log "Not first run; skipping custom_nodes dependency install"
 fi
-
-# --- Ensure ONNX Runtime has CUDA provider (GPU) ---
-python - <<'PY' || {
-import sys
-try:
-    import onnxruntime as ort
-    ok = "CUDAExecutionProvider" in ort.get_available_providers()
-    sys.exit(0 if ok else 1)
-except Exception:
-    sys.exit(1)
-PY
-    log "Installing onnxruntime-gpu for CUDAExecutionProvider..."
-    python -m pip uninstall -y onnxruntime || true
-    python -m pip install --no-cache-dir --user "onnxruntime-gpu>=1.19" || true
-    python - <<'P2' || log "WARNING: ONNX Runtime CUDA provider not available after installation"
-import onnxruntime as ort, sys
-print("ORT providers:", ort.get_available_providers())
-sys.exit(0 if "CUDAExecutionProvider" in ort.get_available_providers() else 1)
-P2
 
 # --- launch ComfyUI ---
 COMFYUI_ARGS=""
