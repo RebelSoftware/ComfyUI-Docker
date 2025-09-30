@@ -256,19 +256,12 @@ if [ "${GPU_COUNT:-0}" -eq 0 ] || [ "${COMPAT_GE_75:-0}" -ne 1 ]; then
     exit 0
 fi
 
-# --- Ensure package managers and Manager deps are available ---
-# 1) Ensure python -m pip works (bootstrap if needed)
+# --- Ensure package manager and Manager deps are available ---
+# Ensure python -m pip works (bootstrap if needed)
 python -m pip --version >/dev/null 2>&1 || python -m ensurepip --upgrade >/dev/null 2>&1 || true
 python -m pip --version >/dev/null 2>&1 || log "WARNING: pip still not available after ensurepip"
 
-# 2) Ensure uv exists system-wide (fast path for Manager)
-if ! command -v uv >/dev/null 2>&1; then
-    log "Installing uv (system-wide) for ComfyUI-Manager support..."
-    wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="/usr/local/bin" UV_NO_MODIFY_PATH=1 sh || true
-    command -v uv >/dev/null 2>&1 || log "WARNING: uv installation failed; Manager will fallback to pip"
-fi
-
-# 3) Ensure ComfyUI-Manager minimal Python deps
+# Ensure ComfyUI-Manager minimal Python deps
 python - <<'PY' || python -m pip install --no-cache-dir --user toml || true
 import sys
 try:
