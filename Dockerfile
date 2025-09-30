@@ -11,7 +11,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     EXT_PARALLEL=4 \
     NVCC_APPEND_FLAGS="--threads 8" \
     MAX_JOBS=32 \
-    SAGE_ATTENTION_AVAILABLE=0
+    SAGE_ATTENTION_AVAILABLE=0 \
+    COMFYUI_PATH=/app/ComfyUI \
+    COMFYUI_MODEL_PATH=/app/ComfyUI/models \
+    COMFYUI_MODELS_PATH=/app/ComfyUI/models
 
 # Enable non-free repositories and install system deps + CUDA toolkit
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -29,6 +32,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     ninja-build \
     patch \
+    pkg-config \
+    libcairo2 \
+    libcairo2-dev \
  && echo "deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list.d/non-free.list \
  && wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb \
  && dpkg -i cuda-keyring_1.1-1_all.deb \
