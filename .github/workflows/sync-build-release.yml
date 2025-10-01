@@ -24,7 +24,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Install prerequisites (jq, curl, gh, git)
+      - name: Install prerequisites (jq, curl, git)
         run: |
           set -e
           if ! command -v jq >/dev/null 2>&1; then
@@ -39,25 +39,32 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Latest upstream release tag (e.g., v0.3.59)
+      
+          # 1) Upstream latest release tag (e.g., v0.3.59)
           LATEST_TAG=$(gh api repos/comfyanonymous/ComfyUI/releases/latest --jq .tag_name)
-          # Fetch comfyui_version.py from upstream default branch
-          if git remote get-url upstream >/dev/null 2>&1; then
-            git remote set-url upstream https://github.com/comfyanonymous/ComfyUI.git
-          else
-            git remote add upstream https://github.com/comfyanonymous/ComfyUI.git
-          fi
+      
+          # 2) Parse upstream comfyui_version.py from the current upstream default branch
+          git remote add upstream https://github.com/comfyanonymous/ComfyUI.git 2>/dev/null || git remote set-url upstream https://github.com/comfyanonymous/ComfyUI.git
           git fetch upstream --depth=1
-          FILE_VER=$(git show upstream/master:comfyui_version.py | sed -n 's/^__version__ = "\(.*\)"/\1/p' | tr -d '\r' || true)
+          FILE_VER=$(git show upstream/master:comfyui_version.py | sed -n 's/^__version__ = "\(.*\)"/\1/p' | tr -d '\r')
+      
+          # Normalize release tag to bare version (strip leading 'v')
           LATEST_VER="${LATEST_TAG#v}"
+      
+          # 3) Only consider it "new" if the release tag matches the version file (avoid early bumps)
           CANDIDATE="none"
           if [ -n "${LATEST_TAG}" ] && [ "${LATEST_TAG}" != "null" ] && [ -n "${FILE_VER}" ] && [ "${FILE_VER}" = "${LATEST_VER}" ]; then
-            # ensure no existing release with same tag in this repo
+            CANDIDATE="${LATEST_TAG}"
+          fi
+      
+          # 4) Skip if this repo already has a release at that tag
+          if [ "${CANDIDATE}" != "none" ]; then
             SELF_TAG=$(gh api repos/${GITHUB_REPOSITORY}/releases/latest --jq .tag_name 2>/dev/null || echo "none")
-            if [ "${SELF_TAG}" != "${LATEST_TAG}" ]; then
-              CANDIDATE="${LATEST_TAG}"
+            if [ "${SELF_TAG}" = "${CANDIDATE}" ]; then
+              CANDIDATE="none"
             fi
           fi
+      
           echo "new_version=${CANDIDATE}" >> "$GITHUB_OUTPUT"
 
   build-gh:
@@ -65,9 +72,6 @@ jobs:
     needs: check-upstream
     if: needs.check-upstream.outputs.new_version != 'none'
     runs-on: ubuntu-latest
-    outputs:
-      built:  ${{ steps.mark.outputs.built }}
-      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,8 +95,8 @@ jobs:
           git fetch upstream
           git checkout master
           git merge --no-commit --no-ff upstream/master --allow-unrelated-histories || true
-          git checkout --ours README.md || true
-          git add README.md || true
+          git checkout --ours README.md
+          git add README.md
           git commit -m "Merge upstream/master, keep local README.md" || true
           git push origin master
 
@@ -150,7 +154,6 @@ jobs:
           password: ${{ secrets.CR_PAT }}
 
       - name: Build and Push (GH runner)
-        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -159,25 +162,15 @@ jobs:
           push: true
           provenance: false
           sbom: false
-          cache-from: type=gha,scope=gh
-          cache-to: type=gha,mode=max,scope=gh
           tags: |
             ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
             ${{ env.IMAGE_NAME }}:latest
 
-      - name: Mark build success
-        id: mark
-        if: ${{ steps.build.outcome == 'success' && steps.build.outputs.digest != '' }}
-        run: echo "built=true" >> "$GITHUB_OUTPUT"
-
   build-self:
     name: Build on Self-Hosted (fallback)
     needs: [check-upstream, build-gh]
-    if: needs.check-upstream.outputs.new_version != 'none' && needs.build-gh.outputs.built != 'true'
+    if: ${{ always() && needs.check-upstream.outputs.new_version != 'none' && needs.build-gh.result != 'success' }}
     runs-on: [self-hosted, linux, x64, homelab]
-    outputs:
-      built:  ${{ steps.mark.outputs.built }}
-      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -201,10 +194,21 @@ jobs:
           git fetch upstream
           git checkout master
           git merge --no-commit --no-ff upstream/master --allow-unrelated-histories || true
-          git checkout --ours README.md || true
-          git add README.md || true
+          git checkout --ours README.md
+          git add README.md
           git commit -m "Merge upstream/master, keep local README.md" || true
           git push origin master
+
+      - name: Show disk usage (pre)
+        run: df -h | sed 's/\s\+/ /g'
+
+      - name: Prune Docker caches (pre)
+        run: |
+          docker builder prune -af || true
+          docker system prune -af --volumes || true
+
+      - name: Show disk usage (post-clean)
+        run: df -h | sed 's/\s\+/ /g'
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -238,7 +242,6 @@ jobs:
           password: ${{ secrets.CR_PAT }}
 
       - name: Build and Push (self-hosted)
-        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -251,15 +254,10 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
             ${{ env.IMAGE_NAME }}:latest
 
-      - name: Mark build success
-        id: mark
-        if: ${{ steps.build.outcome == 'success' && steps.build.outputs.digest != '' }}
-        run: echo "built=true" >> "$GITHUB_OUTPUT"
-
   publish:
     name: Publish Release
     needs: [check-upstream, build-gh, build-self]
-    if: needs.check-upstream.outputs.new_version != 'none' && (needs.build-gh.outputs.built == 'true' || needs.build-self.outputs.built == 'true')
+    if: ${{ needs.check-upstream.outputs.new_version != 'none' && (needs.build-gh.result == 'success' || needs.build-self.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - name: Create GitHub Release
