@@ -8,7 +8,6 @@ on:
 permissions:
   contents: write
   packages: write
-  actions: write
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/comfyui-docker
@@ -88,13 +87,16 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: Set Git Config
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
 
-      - name: Sync with Upstream (idempotent)
+      - name: Sync with Upstream (idempotent; push with CR_PAT)
+        env:
+          PUSH_TOKEN: ${{ secrets.CR_PAT }}
         run: |
           set -euo pipefail
           URL=https://github.com/comfyanonymous/ComfyUI.git
@@ -106,9 +108,11 @@ jobs:
           git fetch upstream
           git checkout master
           git merge --no-commit --no-ff upstream/master --allow-unrelated-histories || true
-          git checkout --ours README.md
-          git add README.md
+          git checkout --ours README.md || true
+          git add README.md || true
           git commit -m "Merge upstream/master, keep local README.md" || true
+          # Use PAT with 'repo' and 'workflow' scopes for pushing workflow file updates
+          git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin master
 
       - name: Show disk usage (pre)
@@ -180,146 +184,4 @@ jobs:
 
       - name: Mark build success
         id: mark
-        if: ${{ success() && steps.build.outputs.digest != '' }}
-        run: echo "built=true" >> "$GITHUB_OUTPUT"
-
-  build-self:
-    name: Build on Self-Hosted (fallback)
-    needs: [check-upstream, build-gh]
-    if: needs.check-upstream.outputs.new_version != 'none' && needs.build-gh.outputs.built != 'true'
-    runs-on: [self-hosted, linux, x64, homelab]
-    outputs:
-      built:  ${{ steps.mark.outputs.built }}
-      digest: ${{ steps.build.outputs.digest }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Set Git Config
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-
-      - name: Sync with Upstream (idempotent)
-        run: |
-          set -euo pipefail
-          URL=https://github.com/comfyanonymous/ComfyUI.git
-          if git remote get-url upstream >/dev/null 2>&1; then
-            git remote set-url upstream "$URL"
-          else
-            git remote add upstream "$URL"
-          fi
-          git fetch upstream
-          git checkout master
-          git merge --no-commit --no-ff upstream/master --allow-unrelated-histories || true
-          git checkout --ours README.md
-          git add README.md
-          git commit -m "Merge upstream/master, keep local README.md" || true
-          git push origin master
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          cleanup: true
-
-      - name: Check CR_PAT secret
-        id: crpat
-        shell: bash
-        run: |
-          if [ -n "${{ secrets.CR_PAT }}" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Login to GHCR with GITHUB_TOKEN
-        if: ${{ steps.crpat.outputs.present == 'false' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Login to GHCR with CR_PAT
-        if: ${{ steps.crpat.outputs.present == 'true' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.CR_PAT }}
-
-      - name: Build and Push (self-hosted)
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          sbom: false
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
-            ${{ env.IMAGE_NAME }}:latest
-
-      - name: Mark build success
-        id: mark
-        if: ${{ success() && steps.build.outputs.digest != '' }}
-        run: echo "built=true" >> "$GITHUB_OUTPUT"
-
-      - name: Remove BuildKit image (moby/buildkit)
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          set -euxo pipefail
-          docker image rm -f $(docker images 'moby/buildkit*' -q) 2>/dev/null || true
-
-      - name: Cleanup (always, scoped)
-        if: ${{ always() }}
-        run: |
-          set -euxo pipefail
-          docker buildx prune -af || true
-          docker image prune -af --filter "until=168h" || true
-          rm -rf "${GITHUB_WORKSPACE:?}/"* "${GITHUB_WORKSPACE:?}/."[!.]* 2>/dev/null || true
-
-  publish:
-    name: Publish Release
-    needs: [check-upstream, build-gh, build-self]
-    if: needs.check-upstream.outputs.new_version != 'none' && (needs.build-gh.outputs.built == 'true' || needs.build-self.outputs.built == 'true')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: ${{ needs.check-upstream.outputs.new_version }}
-          name: Release ${{ needs.check-upstream.outputs.new_version }}
-          body: |
-            New version synced from upstream ComfyUI.
-            Docker image:
-            - docker pull ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
-            - docker pull ${{ env.IMAGE_NAME }}:latest
-          draft: false
-          prerelease: false
-
-  finalize:
-    name: Finalize Outcome
-    needs: [check-upstream, build-gh, build-self, publish]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: No upstream release -> success
-        if: ${{ needs.check-upstream.outputs.new_version == 'none' }}
-        run: echo "No upstream release; run is successful."
-
-      - name: Published -> success
-        if: ${{ needs.check-upstream.outputs.new_version != 'none' && needs.publish.result == 'success' }}
-        run: echo "Image built and release published; run is successful."
-
-      - name: Fail if not published (both build paths failed or publish failed)
-        if: ${{ needs.check-upstream.outputs.new_version != 'none' && needs.publish.result != 'success' }}
-        run: |
-          echo "New upstream version detected, but no successful publish."
-          exit 1
+        if: $
