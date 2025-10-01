@@ -262,13 +262,6 @@ python -m pip --version >/dev/null 2>&1 || python -m ensurepip --upgrade >/dev/n
 python -m pip --version >/dev/null 2>&1 || log "WARNING: pip still not available after ensurepip"
 
 # Ensure ComfyUI-Manager minimal Python deps
-
-
-
-
-
-
-
 python - <<'PY' || python -m pip install --no-cache-dir --user toml || true
 import sys
 try:
@@ -321,7 +314,7 @@ else
 fi
 
 # --- Ensure ONNX Runtime has CUDA provider (GPU) ---
-python - <<'PY' || {
+python - <<'PY' || 
 import sys
 try:
     import onnxruntime as ort
