@@ -109,7 +109,7 @@ jobs:
           git add README.md
           git commit -m "Merge upstream/master, keep local README.md" || true
           git push origin master
-          
+
       - name: Show disk usage (pre)
         run: df -h | sed 's/\s\+/ /g'
 
@@ -131,7 +131,7 @@ jobs:
 
       - name: Show disk usage (post-clean)
         run: df -h | sed 's/\s\+/ /g'
-        
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -267,6 +267,21 @@ jobs:
         id: mark
         if: ${{ success() && steps.build.outputs.digest != '' }}
         run: echo "built=true" >> "$GITHUB_OUTPUT"
+
+      - name: Remove BuildKit image (moby/buildkit)
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker image rm -f $(docker images 'moby/buildkit*' -q) 2>/dev/null || true
+
+      - name: Cleanup (always, scoped)
+        if: ${{ always() }}
+        run: |
+          set -euxo pipefail
+          docker buildx prune -af || true
+          docker image prune -af --filter "until=168h" || true
+          rm -rf "${GITHUB_WORKSPACE:?}/"* "${GITHUB_WORKSPACE:?}/."[!.]* 2>/dev/null || true
 
   publish:
     name: Publish Release
