@@ -12,7 +12,6 @@ SAGE_ATTENTION_DIR="$BASE_DIR/.sage_attention"
 SAGE_ATTENTION_BUILT_FLAG="$SAGE_ATTENTION_DIR/.built"
 PERMISSIONS_SET_FLAG="$BASE_DIR/.permissions_set"
 FIRST_RUN_FLAG="$BASE_DIR/.first_run_done"
-GPU_CHECK_FLAG="$BASE_DIR/.gpu_check_passed"
 
 # --- logging ---
 log() { echo "[$(date '+%H:%M:%S')] $1"; }
@@ -20,75 +19,11 @@ log() { echo "[$(date '+%H:%M:%S')] $1"; }
 # Make newly created files group-writable (helps in shared volumes)
 umask 0002
 
-# --- early GPU probe (single pass; exit if not OK) ---
-early_gpu_probe() {
-  # Skip re-probe if cached OK
-  if [ -f "$GPU_CHECK_FLAG" ]; then
-    log "GPU check previously passed; skipping reprobe"
-    return 0
-  fi
-
-  # 1) Prefer nvidia-smi if present (fails when driver/device not exposed)
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    if nvidia-smi -L >/dev/null 2>&1; then
-      # Optional: check compute capability via nvidia-smi if available
-      cc_ok=1
-      if nvidia-smi --query-gpu=compute_cap --format=csv,noheader >/dev/null 2>&1; then
-        # compute_cap is like "8.9", "9.0"
-        while IFS= read -r cap; do
-          maj="${cap%%.*}"; min="${cap#*.}"
-          [ -z "$maj" ] && continue
-          val=$((10*${maj:-0}+${min:-0}))
-          if [ "$val" -lt 75 ]; then cc_ok=0; fi
-        done < <(nvidia-smi --query-gpu=compute_cap --format=csv,noheader || true)
-      fi
-      if [ "$cc_ok" -eq 1 ]; then
-        touch "$GPU_CHECK_FLAG"
-        log "GPU check passed via nvidia-smi"
-        return 0
-      else
-        log "Incompatible GPU compute capability detected (< 7.5); exiting"
-        return 2
-      fi
-    fi
-  fi
-
-  # 2) Fallback: torch probe (does not need a GPU to import)
-  if python - <<'PY'
-import sys
-try:
-    import torch
-    sys.exit(0 if torch.cuda.is_available() else 3)
-except Exception:
-    sys.exit(4)
-PY
-  then
-    touch "$GPU_CHECK_FLAG"
-    log "GPU check passed via torch probe"
-    return 0
-  else
-    rc=$?
-    if [ $rc -eq 3 ]; then
-      log "torch reports CUDA unavailable; exiting"
-    else
-      log "torch probe failed to import or run; exiting"
-    fi
-    return 5
-  fi
-}
-
-# Run early GPU probe before any user/permission work
-if ! early_gpu_probe; then
-  log "No compatible NVIDIA GPU detected or driver not visible to container; exiting."
-  exit 42
-fi
-
 # --- build parallelism (single knob) ---
 decide_build_jobs() {
     if [ -n "${SAGE_MAX_JOBS:-}" ]; then echo "$SAGE_MAX_JOBS"; return; fi
-    local mem_kb cpu cap jobs
-    mem_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
-    cpu=$(nproc) cap=24
+    local mem_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    local cpu=$(nproc) cap=24 jobs
     if   [ "$mem_kb" -le $((8*1024*1024)) ];  then jobs=2
     elif [ "$mem_kb" -le $((12*1024*1024)) ]; then jobs=3
     elif [ "$mem_kb" -le $((24*1024*1024)) ]; then jobs=4
@@ -98,7 +33,7 @@ decide_build_jobs() {
     echo "$jobs"
 }
 
-# --- unified GPU probe (torch-based, for downstream flags) ---
+# --- unified GPU probe (torch-based) ---
 probe_and_prepare_gpu() {
 python - <<'PY' 2>/dev/null
 import os, sys
@@ -223,7 +158,7 @@ test_sage_attention() {
     python -c "
 import sys
 try:
-    import sageattention; print('[TEST] SageAttention import: SUCCESS]')
+    import sageattention; print('[TEST] SageAttention import: SUCCESS')
     v=getattr(sageattention,'__version__',None)
     if v: print(f'[TEST] Version: {v}'); sys.exit(0)
 except ImportError as e:
@@ -314,15 +249,27 @@ export PYTHONPATH="$HOME/.local/lib/python${pyver}/site-packages:${PYTHONPATH:-}
 export PIP_USER=1
 export PIP_PREFER_BINARY=1
 
-# --- single GPU probe for downstream flags ---
+# --- single GPU probe + early exit ---
 eval "$(probe_and_prepare_gpu)"
+if [ "${GPU_COUNT:-0}" -eq 0 ] || [ "${COMPAT_GE_75:-0}" -ne 1 ]; then
+    log "No compatible NVIDIA GPU (compute capability >= 7.5) detected; shutting down."
+    exit 0
+fi
 
-# Ensure pip available
+# --- Ensure package manager and Manager deps are available ---
+# Ensure python -m pip works (bootstrap if needed)
 python -m pip --version >/dev/null 2>&1 || python -m ensurepip --upgrade >/dev/null 2>&1 || true
 python -m pip --version >/dev/null 2>&1 || log "WARNING: pip still not available after ensurepip"
 
-# Ensure ComfyUI-Manager minimal dep
-python - <<'PY'
+# Ensure ComfyUI-Manager minimal Python deps
+
+
+
+
+
+
+
+python - <<'PY' || python -m pip install --no-cache-dir --user toml || true
 import sys
 try:
     import toml  # noqa
@@ -330,9 +277,6 @@ try:
 except Exception:
     sys.exit(1)
 PY
-if [ $? -ne 0 ]; then
-    python -m pip install --no-cache-dir --user toml || true
-fi
 
 # --- SageAttention setup using probed data ---
 setup_sage_attention
@@ -375,6 +319,25 @@ if [ ! -f "$FIRST_RUN_FLAG" ] || [ "${COMFY_FORCE_INSTALL:-0}" = "1" ]; then
 else
     log "Not first run; skipping custom_nodes dependency install"
 fi
+
+# --- Ensure ONNX Runtime has CUDA provider (GPU) ---
+python - <<'PY' || {
+import sys
+try:
+    import onnxruntime as ort
+    ok = "CUDAExecutionProvider" in ort.get_available_providers()
+    sys.exit(0 if ok else 1)
+except Exception:
+    sys.exit(1)
+PY
+    log "Installing onnxruntime-gpu for CUDAExecutionProvider..."
+    python -m pip uninstall -y onnxruntime || true
+    python -m pip install --no-cache-dir --user "onnxruntime-gpu>=1.19" || true
+    python - <<'P2' || log "WARNING: ONNX Runtime CUDA provider not available after installation"
+import onnxruntime as ort, sys
+print("ORT providers:", ort.get_available_providers())
+sys.exit(0 if "CUDAExecutionProvider" in ort.get_available_providers() else 1)
+P2
 
 # --- launch ComfyUI ---
 COMFYUI_ARGS=""
