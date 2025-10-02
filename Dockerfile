@@ -71,19 +71,13 @@ RUN ln -sf /usr/local/cuda-12.9 /usr/local/cuda
 RUN set -e; \
     if getent group 1000 >/dev/null 2>&1; then \
         EXISTING_GROUP=$(getent group 1000 | cut -d: -f1); \
-        echo "GID 1000 exists as group: $EXISTING_GROUP"; \
-        if [ "$EXISTING_GROUP" != "appuser" ]; then \
-            groupadd appuser; \
-        fi; \
+        if [ "$EXISTING_GROUP" != "appuser" ]; then groupadd appuser; fi; \
     else \
         groupadd --gid 1000 appuser; \
     fi; \
     if getent passwd 1000 >/dev/null 2>&1; then \
         EXISTING_USER=$(getent passwd 1000 | cut -d: -f1); \
-        echo "UID 1000 exists as user: $EXISTING_USER"; \
-        if [ "$EXISTING_USER" != "appuser" ]; then \
-            useradd --gid appuser --create-home --shell /bin/bash appuser; \
-        fi; \
+        if [ "$EXISTING_USER" != "appuser" ]; then useradd --gid appuser --create-home --shell /bin/bash appuser; fi; \
     else \
         useradd --uid 1000 --gid appuser --create-home --shell /bin/bash appuser; \
     fi; \
@@ -96,15 +90,23 @@ WORKDIR /app/ComfyUI
 # Copy requirements with optional handling
 COPY requirements.txt* ./
 
-# Core Python deps (torch CUDA 12.9, ComfyUI reqs, media/NVML libs, CuPy (CUDA 12.x wheel), and ORT-GPU)
-RUN python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129 \
- && python -m pip install triton \
+# Core Python deps (torch CUDA 12.9, pin Triton, plus common deps)
+RUN python -m pip install --upgrade pip setuptools wheel \
+ && python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129 \
+ && python -m pip install "triton==3.4.0" \
  && python -m pip install --prefer-binary cupy-cuda12x \
  && if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi \
- && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py onnxruntime-gpu
+ && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py onnxruntime-gpu \
+ && python -m pip install toml GitPython
 
 # Copy the application
 COPY . .
+
+# Pre-bake ComfyUI-Manager to reduce runtime work (entrypoint will still update)
+RUN mkdir -p /app/ComfyUI/custom_nodes \
+ && if [ ! -d "/app/ComfyUI/custom_nodes/ComfyUI-Manager" ]; then \
+      git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git /app/ComfyUI/custom_nodes/ComfyUI-Manager || true; \
+    fi
 
 # Entrypoint
 COPY entrypoint.sh /entrypoint.sh
