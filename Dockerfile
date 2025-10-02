@@ -8,6 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_USE_PEP517=1 \
     EXT_PARALLEL=4 \
     NVCC_APPEND_FLAGS="--threads 8" \
     MAX_JOBS=32 \
@@ -99,14 +100,11 @@ RUN python -m pip install --upgrade pip setuptools wheel \
 # Copy the application
 COPY . .
 
-# Pre-bake ComfyUI-Manager and configure it to not use uv
+# Pre-bake ComfyUI-Manager
 RUN mkdir -p /app/ComfyUI/custom_nodes \
  && if [ ! -d "/app/ComfyUI/custom_nodes/ComfyUI-Manager" ]; then \
       git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git /app/ComfyUI/custom_nodes/ComfyUI-Manager || true; \
-    fi \
- && mkdir -p /app/ComfyUI/user/default/ComfyUI-Manager \
- && echo "[default]" > /app/ComfyUI/user/default/ComfyUI-Manager/config.ini \
- && echo "use_uv = false" >> /app/ComfyUI/user/default/ComfyUI-Manager/config.ini
+    fi
 
 # Entrypoint
 COPY entrypoint.sh /entrypoint.sh
