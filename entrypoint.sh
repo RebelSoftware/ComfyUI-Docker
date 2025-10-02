@@ -12,6 +12,7 @@ SAGE_ATTENTION_DIR="$BASE_DIR/.sage_attention"
 SAGE_ATTENTION_BUILT_FLAG="$SAGE_ATTENTION_DIR/.built"
 PERMISSIONS_SET_FLAG="$BASE_DIR/.permissions_set"
 FIRST_RUN_FLAG="$BASE_DIR/.first_run_done"
+GPU_ENV_FILE=/tmp/gpu_probe.env
 
 # --- logging ---
 log() { echo "[$(date '+%H:%M:%S')] $1"; }
@@ -33,30 +34,32 @@ decide_build_jobs() {
     echo "$jobs"
 }
 
-# --- unified GPU probe (torch-based) ---
+# --- unified single GPU probe (torch-based) ---
 probe_and_prepare_gpu() {
 python - <<'PY' 2>/dev/null
 import os, sys
 try:
     import torch
 except Exception:
-    print("GPU_COUNT=0"); print("COMPAT_GE_75=0"); print("TORCH_CUDA_ARCH_LIST=''")
-    print("DET_TURING=false"); print("DET_AMP80=false"); print("DET_AMP86=false"); print("DET_AMP87=false")
-    print("DET_ADA=false"); print("DET_HOPPER=false"); print("DET_BW12=false"); print("DET_BW10=false")
-    print("SAGE_STRATEGY='fallback'"); sys.exit(0)
+    print("export GPU_COUNT=0"); print("export COMPAT_GE_75=0"); print("export TORCH_CUDA_ARCH_LIST=''")
+    for k in ("DET_TURING","DET_AMP80","DET_AMP86","DET_AMP87","DET_ADA","DET_HOPPER","DET_BW12","DET_BW10"):
+        print(f"export {k}=false")
+    print("export SAGE_STRATEGY='fallback'"); print("export GPU_LIST=''"); sys.exit(0)
 if not torch.cuda.is_available():
-    print("GPU_COUNT=0"); print("COMPAT_GE_75=0"); print("TORCH_CUDA_ARCH_LIST=''")
-    print("DET_TURING=false"); print("DET_AMP80=false"); print("DET_AMP86=false"); print("DET_AMP87=false")
-    print("DET_ADA=false"); print("DET_HOPPER=false"); print("DET_BW12=false"); print("DET_BW10=false")
-    print("SAGE_STRATEGY='fallback'"); sys.exit(0)
+    print("export GPU_COUNT=0"); print("export COMPAT_GE_75=0"); print("export TORCH_CUDA_ARCH_LIST=''")
+    for k in ("DET_TURING","DET_AMP80","DET_AMP86","DET_AMP87","DET_ADA","DET_HOPPER","DET_BW12","DET_BW10"):
+        print(f"export {k}=false")
+    print("export SAGE_STRATEGY='fallback'"); print("export GPU_LIST=''"); sys.exit(0)
 n = torch.cuda.device_count()
-ccs = []
 flags = {"DET_TURING":False,"DET_AMP80":False,"DET_AMP86":False,"DET_AMP87":False,"DET_ADA":False,"DET_HOPPER":False,"DET_BW12":False,"DET_BW10":False}
-compat = False
+ccs, infos, compat = [], [], False
 for i in range(n):
     p = torch.cuda.get_device_properties(i)
+    name = getattr(p, "name", f"cuda:{i}")
     mj, mn = p.major, p.minor
+    vram_gb = int(round(p.total_memory/1024**3))
     ccs.append(f"{mj}.{mn}")
+    infos.append(f"{i}: {name.replace(' ', '_')} (CC {mj}.{mn}, {vram_gb}GB)")
     if (mj,mn)==(7,5): flags["DET_TURING"]=True
     elif (mj,mn)==(8,0): flags["DET_AMP80"]=True
     elif (mj,mn)==(8,6): flags["DET_AMP86"]=True
@@ -65,12 +68,11 @@ for i in range(n):
     elif (mj,mn)==(9,0): flags["DET_HOPPER"]=True
     elif (mj,mn)==(10,0): flags["DET_BW10"]=True
     elif (mj,mn)==(12,0): flags["DET_BW12"]=True
-    if (mj*10+mn) >= 75:
-        compat = True
+    if (mj*10+mn) >= 75: compat = True
 ordered = sorted(set(ccs), key=lambda s: tuple(map(int, s.split("."))))
 arch_list = ";".join(ordered) if ordered else ""
 if flags["DET_TURING"]:
-    if any(flags[k] for k in ["DET_AMP80","DET_AMP86","DET_AMP87","DET_ADA","DET_HOPPER","DET_BW12","DET_BW10"]):
+    if any(flags[k] for k in ("DET_AMP80","DET_AMP86","DET_AMP87","DET_ADA","DET_HOPPER","DET_BW12","DET_BW10")):
         strategy = "mixed_with_turing"
     else:
         strategy = "turing_only"
@@ -82,70 +84,88 @@ elif flags["DET_ADA"] or flags["DET_AMP86"] or flags["DET_AMP87"] or flags["DET_
     strategy = "ampere_ada_optimized"
 else:
     strategy = "fallback"
-print(f"GPU_COUNT={n}")
-print(f"COMPAT_GE_75={1 if compat else 0}")
-print(f"TORCH_CUDA_ARCH_LIST='{arch_list}'")
-for k,v in flags.items():
-    print(f"{k}={'true' if v else 'false'}")
-print(f"SAGE_STRATEGY='{strategy}'")
-print(f"[GPU] Found {n} CUDA device(s); CC list: {arch_list or 'none'}; strategy={strategy}; compat>=7.5:{compat}", file=sys.stderr)
+print(f"export GPU_COUNT={n}"); print(f"export COMPAT_GE_75={1 if compat else 0}")
+print(f"export TORCH_CUDA_ARCH_LIST='{arch_list}'"); [print(f"export {k}={'true' if v else 'false'}") for k,v in flags.items()]
+print(f"export SAGE_STRATEGY='{strategy}'"); print(f\"export GPU_LIST={' ; '.join(infos)}\")
+print(f\"[GPU] Found {n} CUDA device(s); CC list: {arch_list or 'none'}; strategy={strategy}; compat>=7.5:{compat}\", file=sys.stderr)
+for s in infos: print(f\"[GPU] {s}\", file=sys.stderr)
 PY
 }
 
 # --- Triton management (conditional, system-wide) ---
 install_triton_version() {
-    # Query existing version; only change if strategy truly requires
     local cur=""
     cur="$(python - <<'PY' 2>/dev/null || true
 try:
-    import importlib.metadata as md
-    print(md.version("triton"))
-except Exception:
-    pass
+    import importlib.metadata as md; print(md.version("triton"))
+except Exception: pass
 PY
 )"
     case "${SAGE_STRATEGY:-fallback}" in
         "mixed_with_turing"|"turing_only")
             if [ "$cur" != "3.2.0" ]; then
-                log "Installing Triton 3.2.0 for Turing compatibility (current: ${cur:-none})"
+                log "Adjusting Triton -> 3.2.0 for Turing compatibility (current: ${cur:-none})"
                 python -m pip install --no-cache-dir "triton==3.2.0" || true
             else
                 log "Triton 3.2.0 already present; skipping"
             fi
             ;;
-        *)
-            # Image bakes Triton==3.4.0; leave as-is
-            log "Using baked Triton (${cur:-unknown}); no change"
-            ;;
+        *) log "Using baked Triton (${cur:-unknown}); no change" ;;
     esac
 }
 
+# --- Ensure python -s -m pip works (for Manager) ---
+ensure_pip_available() {
+    if python -s -m pip --version >/dev/null 2>&1 && python -s -m pip list -q >/dev/null 2>&1; then
+        return 0
+    fi
+    log "Bootstrapping pip for Manager compatibility (isolated mode check failed)"
+    python -m ensurepip --upgrade >/dev/null 2>&1 || true
+    python -m pip install -U pip setuptools wheel >/dev/null 2>&1 || true
+    if python -s -m pip --version >/dev/null 2>&1 && python -s -m pip list -q >/dev/null 2>&1; then
+        log "pip is available for python -s -m pip"
+        return 0
+    else
+        log "WARNING: pip still not available for python -s -m pip; Manager may warn about pip/uv"
+        return 1
+    fi
+}
+
 build_sage_attention_mixed() {
-    log "Building Sage Attention..."
     mkdir -p "$SAGE_ATTENTION_DIR"; cd "$SAGE_ATTENTION_DIR"
     export TORCH_CUDA_ARCH_LIST="${SAGE_ARCH_LIST_OVERRIDE:-${TORCH_CUDA_ARCH_LIST:-}}"
     if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ]; then
         TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0"
     fi
     log "Set TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST"
-
     case "${SAGE_STRATEGY:-fallback}" in
         "mixed_with_turing"|"turing_only")
             log "Cloning SageAttention v1.0 for Turing"
-            if [ -d "SageAttention/.git" ]; then cd SageAttention; git fetch --depth 1 origin || return 1; git checkout v1.0 2>/dev/null || git checkout -b v1.0 origin/v1.0 || return 1; git reset --hard origin/v1.0 || return 1
-            else rm -rf SageAttention; git clone --depth 1 https://github.com/thu-ml/SageAttention.git -b v1.0 || return 1; cd SageAttention; fi
+            if [ -d "SageAttention/.git" ]; then
+                cd SageAttention; git fetch --depth 1 origin || return 1
+                git checkout v1.0 2>/dev/null || git checkout -b v1.0 origin/v1.0 || return 1
+                git reset --hard origin/v1.0 || return 1
+            else
+                rm -rf SageAttention
+                git clone --depth 1 https://github.com/thu-ml/SageAttention.git -b v1.0 || return 1
+                cd SageAttention
+            fi
             ;;
         *)
             log "Cloning latest SageAttention"
-            if [ -d "SageAttention/.git" ]; then cd SageAttention; git fetch --depth 1 origin || return 1; git reset --hard origin/main || return 1
-            else rm -rf SageAttention; git clone --depth 1 https://github.com/thu-ml/SageAttention.git || return 1; cd SageAttention; fi
+            if [ -d "SageAttention/.git" ]; then
+                cd SageAttention; git fetch --depth 1 origin || return 1
+                git reset --hard origin/main || return 1
+            else
+                rm -rf SageAttention
+                git clone --depth 1 https://github.com/thu-ml/SageAttention.git || return 1
+                cd SageAttention
+            fi
             ;;
     esac
-
     [ "${SAGE_VERBOSE_BUILD:-0}" = "1" ] && export TORCH_CPP_BUILD_VERBOSE=1
     local jobs; jobs="$(decide_build_jobs)"
     log "Using MAX_JOBS=${jobs} for SageAttention build"
-
     if MAX_JOBS="${jobs}" python -m pip install --no-build-isolation .; then
         echo "${SAGE_STRATEGY:-fallback}|${TORCH_CUDA_ARCH_LIST:-}" > "$SAGE_ATTENTION_BUILT_FLAG"
         log "SageAttention built successfully"
@@ -183,7 +203,7 @@ setup_sage_attention() {
     if [ "${GPU_COUNT:-0}" -eq 0 ]; then log "No GPUs detected, skipping SageAttention setup"; return 0; fi
     if [ "${COMPAT_GE_75:-0}" -ne 1 ]; then log "GPU compute capability < 7.5; skipping SageAttention"; return 0; fi
     if needs_rebuild || ! test_sage_attention; then
-        log "Building SageAttention..."
+        log "Compiling SageAttention..."
         if install_triton_version && build_sage_attention_mixed && test_sage_attention; then
             export SAGE_ATTENTION_BUILT=1 SAGE_ATTENTION_AVAILABLE=1
             log "SageAttention is built; set FORCE_SAGE_ATTENTION=1 to enable it at startup"
@@ -197,17 +217,17 @@ setup_sage_attention() {
     fi
 }
 
-# --- early GPU probe and exit (before heavy setup) ---
-eval "$(probe_and_prepare_gpu)"
+# --- single early GPU probe (persist across user switch) ---
+probe_and_prepare_gpu > "$GPU_ENV_FILE"
+# shellcheck disable=SC1090
+source "$GPU_ENV_FILE" || true
 log "GPU probe: ${GPU_COUNT:-0} CUDA device(s); CC list: ${TORCH_CUDA_ARCH_LIST:-none}; strategy=${SAGE_STRATEGY:-fallback}"
-if [ "${GPU_COUNT:-0}" -eq 0 ]; then
-    log "No NVIDIA GPU detected; shutting down."
-    exit 0
+if [ -n "${GPU_LIST:-}" ]; then
+    IFS=';' read -ra _GPUS <<< "$GPU_LIST"
+    for g in "${_GPUS[@]}"; do g_trim="$(echo "$g" | sed 's/^ \+//; s/ \+$//')"; [ -n "$g_trim" ] && log " - $g_trim"; done
 fi
-if [ "${COMPAT_GE_75:-0}" -ne 1 ]; then
-    log "GPU compute capability < 7.5; shutting down."
-    exit 0
-fi
+if [ "${GPU_COUNT:-0}" -eq 0 ]; then log "No NVIDIA GPU detected; shutting down."; exit 0; fi
+if [ "${COMPAT_GE_75:-0}" -ne 1 ]; then log "GPU compute capability < 7.5; shutting down."; exit 0; fi
 
 # --- root to runtime user ---
 if [ "$(id -u)" = "0" ]; then
@@ -220,7 +240,7 @@ if [ "$(id -u)" = "0" ]; then
         mkdir -p "/home/${APP_USER}"
         for d in "$BASE_DIR" "/home/$APP_USER"; do [ -e "$d" ] && chown -R "${APP_USER}:${APP_GROUP}" "$d" || true; done
 
-        # Make system site-packages writable by the runtime user (no venvs; system-wide installs)
+        # Make system site-packages writable by the runtime user (system-wide installs)
         readarray -t PY_PATHS < <(python - <<'PY'
 import sys, sysconfig, os, site, datetime
 def log(m): print(f"[bootstrap:python {datetime.datetime.now().strftime('%H:%M:%S')}] {m}", file=sys.stderr, flush=True)
@@ -244,18 +264,8 @@ if d:
             print(v); seen.add(v); log(f"emit wheel data -> {v}")
 PY
 )
-        for d in "${PY_PATHS[@]}"; do
-            [ -n "$d" ] || continue
-            mkdir -p "$d" || true
-            chown -R "${APP_USER}:${APP_GROUP}" "$d" || true
-            chmod -R u+rwX,g+rwX "$d" || true
-        done
-
-        if [ -d "/usr/local/lib/python3.12/site-packages" ]; then
-            chown -R "${APP_USER}:${APP_GROUP}" /usr/local/lib/python3.12/site-packages || true
-            chmod -R u+rwX,g+rwX /usr/local/lib/python3.12/site-packages || true
-        fi
-
+        for d in "${PY_PATHS[@]}"; do [ -n "$d" ] || continue; mkdir -p "$d" || true; chown -R "${APP_USER}:${APP_GROUP}" "$d" || true; chmod -R u+rwX,g+rwX "$d" || true; done
+        if [ -d "/usr/local/lib/python3.12/site-packages" ]; then chown -R "${APP_USER}:${APP_GROUP}" /usr/local/lib/python3.12/site-packages || true; chmod -R u+rwX,g+rwX /usr/local/lib/python3.12/site-packages || true; fi
         touch "$PERMISSIONS_SET_FLAG"; chown "${APP_USER}:${APP_GROUP}" "$PERMISSIONS_SET_FLAG"
         log "User permissions configured"
     else
@@ -271,26 +281,26 @@ pyver="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_in
 export PYTHONPATH="$HOME/.local/lib/python${pyver}/site-packages:${PYTHONPATH:-}"
 export PIP_PREFER_BINARY=1
 
-# --- refresh GPU probe after user switch (no exit) ---
-eval "$(probe_and_prepare_gpu)"
-log "GPU probe (post-switch): ${GPU_COUNT:-0} CUDA device(s); CC list: ${TORCH_CUDA_ARCH_LIST:-none}; strategy=${SAGE_STRATEGY:-fallback}"
+# --- load single probe results after switch (no re-probe), then delete ---
+# shellcheck disable=SC1090
+[ -f "$GPU_ENV_FILE" ] && source "$GPU_ENV_FILE" || true
+[ -f "$GPU_ENV_FILE" ] && rm -f "$GPU_ENV_FILE" || true
+log "GPU probe (restored): ${GPU_COUNT:-0} CUDA device(s); CC list: ${TORCH_CUDA_ARCH_LIST:-none}; strategy=${SAGE_STRATEGY:-fallback}"
+if [ -n "${GPU_LIST:-}" ]; then IFS=';' read -ra _GPUS <<< "$GPU_LIST"; for g in "${_GPUS[@]}"; do g_trim="$(echo "$g" | sed 's/^ \+//; s/ \+$//')"; [ -n "$g_trim" ] && log " - $g_trim"; done; fi
 
-# Ensure pip works
+# Ensure pip works (and in isolated mode for Manager)
 python -m pip --version >/dev/null 2>&1 || python -m ensurepip --upgrade >/dev/null 2>&1 || true
 python -m pip --version >/dev/null 2>&1 || log "WARNING: pip still not available after ensurepip"
-
-# Ensure minimal Python deps for ComfyUI-Manager (pre-baked, but verify)
-python - <<'PY' || python -m pip install --no-cache-dir toml GitPython || true
-import sys
-import importlib
-for m in ("toml","git"):
-    try: importlib.import_module(m)
-    except Exception: sys.exit(1)
-sys.exit(0)
-PY
+ensure_pip_available || true
 
 # --- SageAttention setup using probed data ---
 setup_sage_attention
+
+# --- clear probe-specific environment to avoid leaking into runtime ---
+for v in GPU_COUNT COMPAT_GE_75 TORCH_CUDA_ARCH_LIST SAGE_STRATEGY \
+         DET_TURING DET_AMP80 DET_AMP86 DET_AMP87 DET_ADA DET_HOPPER DET_BW12 DET_BW10 GPU_LIST; do
+    unset "$v" || true
+done
 
 # --- ComfyUI-Manager sync ---
 if [ -d "$CUSTOM_NODES_DIR/ComfyUI-Manager/.git" ]; then
