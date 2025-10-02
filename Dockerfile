@@ -102,11 +102,14 @@ RUN python -m pip install --upgrade pip setuptools wheel \
 # Copy the application
 COPY . .
 
-# Pre-bake ComfyUI-Manager to reduce runtime work (entrypoint will still update)
+# Pre-bake ComfyUI-Manager and configure it to not use uv
 RUN mkdir -p /app/ComfyUI/custom_nodes \
  && if [ ! -d "/app/ComfyUI/custom_nodes/ComfyUI-Manager" ]; then \
       git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git /app/ComfyUI/custom_nodes/ComfyUI-Manager || true; \
-    fi
+    fi \
+ && mkdir -p /app/ComfyUI/user/default/ComfyUI-Manager \
+ && echo "[default]" > /app/ComfyUI/user/default/ComfyUI-Manager/config.ini \
+ && echo "use_uv = false" >> /app/ComfyUI/user/default/ComfyUI-Manager/config.ini
 
 # Entrypoint
 COPY entrypoint.sh /entrypoint.sh
