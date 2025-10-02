@@ -88,24 +88,34 @@ print(f"TORCH_CUDA_ARCH_LIST='{arch_list}'")
 for k,v in flags.items():
     print(f"{k}={'true' if v else 'false'}")
 print(f"SAGE_STRATEGY='{strategy}'")
-print(f"[GPU] Found {n} CUDA device(s); CC list: {arch_list or 'none'}; strategy={strategy}; compat>={7.5}:{compat}", file=sys.stderr)
+print(f"[GPU] Found {n} CUDA device(s); CC list: {arch_list or 'none'}; strategy={strategy}; compat>=7.5:{compat}", file=sys.stderr)
 PY
 }
 
-# --- install triton versions based on strategy ---
+# --- Triton management (conditional, system-wide) ---
 install_triton_version() {
+    # Query existing version; only change if strategy truly requires
+    local cur=""
+    cur="$(python - <<'PY' 2>/dev/null || true
+try:
+    import importlib.metadata as md
+    print(md.version("triton"))
+except Exception:
+    pass
+PY
+)"
     case "${SAGE_STRATEGY:-fallback}" in
         "mixed_with_turing"|"turing_only")
-            log "Installing Triton 3.2.0 for Turing compatibility"
-            python -m pip install --user --force-reinstall "triton==3.2.0" || python -m pip install --user --force-reinstall triton || true
-            ;;
-        "blackwell_capable"|"hopper_capable")
-            log "Installing latest Triton for Hopper/Blackwell"
-            python -m pip install --user --force-reinstall triton || python -m pip install --user --force-reinstall --pre triton || python -m pip install --user --force-reinstall "triton>=3.2.0" || true
+            if [ "$cur" != "3.2.0" ]; then
+                log "Installing Triton 3.2.0 for Turing compatibility (current: ${cur:-none})"
+                python -m pip install --no-cache-dir "triton==3.2.0" || true
+            else
+                log "Triton 3.2.0 already present; skipping"
+            fi
             ;;
         *)
-            log "Installing latest stable Triton"
-            python -m pip install --user --force-reinstall triton || { log "WARNING: Triton installation failed"; return 1; }
+            # Image bakes Triton==3.4.0; leave as-is
+            log "Using baked Triton (${cur:-unknown}); no change"
             ;;
     esac
 }
@@ -136,7 +146,7 @@ build_sage_attention_mixed() {
     local jobs; jobs="$(decide_build_jobs)"
     log "Using MAX_JOBS=${jobs} for SageAttention build"
 
-    if MAX_JOBS="${jobs}" python -m pip install --user --no-build-isolation .; then
+    if MAX_JOBS="${jobs}" python -m pip install --no-build-isolation .; then
         echo "${SAGE_STRATEGY:-fallback}|${TORCH_CUDA_ARCH_LIST:-}" > "$SAGE_ATTENTION_BUILT_FLAG"
         log "SageAttention built successfully"
         cd "$BASE_DIR"; return 0
@@ -187,6 +197,18 @@ setup_sage_attention() {
     fi
 }
 
+# --- early GPU probe and exit (before heavy setup) ---
+eval "$(probe_and_prepare_gpu)"
+log "GPU probe: ${GPU_COUNT:-0} CUDA device(s); CC list: ${TORCH_CUDA_ARCH_LIST:-none}; strategy=${SAGE_STRATEGY:-fallback}"
+if [ "${GPU_COUNT:-0}" -eq 0 ]; then
+    log "No NVIDIA GPU detected; shutting down."
+    exit 0
+fi
+if [ "${COMPAT_GE_75:-0}" -ne 1 ]; then
+    log "GPU compute capability < 7.5; shutting down."
+    exit 0
+fi
+
 # --- root to runtime user ---
 if [ "$(id -u)" = "0" ]; then
     if [ ! -f "$PERMISSIONS_SET_FLAG" ]; then
@@ -198,6 +220,7 @@ if [ "$(id -u)" = "0" ]; then
         mkdir -p "/home/${APP_USER}"
         for d in "$BASE_DIR" "/home/$APP_USER"; do [ -e "$d" ] && chown -R "${APP_USER}:${APP_GROUP}" "$d" || true; done
 
+        # Make system site-packages writable by the runtime user (no venvs; system-wide installs)
         readarray -t PY_PATHS < <(python - <<'PY'
 import sys, sysconfig, os, site, datetime
 def log(m): print(f"[bootstrap:python {datetime.datetime.now().strftime('%H:%M:%S')}] {m}", file=sys.stderr, flush=True)
@@ -246,29 +269,24 @@ fi
 export PATH="$HOME/.local/bin:$PATH"
 pyver="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 export PYTHONPATH="$HOME/.local/lib/python${pyver}/site-packages:${PYTHONPATH:-}"
-export PIP_USER=1
 export PIP_PREFER_BINARY=1
 
-# --- single GPU probe + early exit ---
+# --- refresh GPU probe after user switch (no exit) ---
 eval "$(probe_and_prepare_gpu)"
-if [ "${GPU_COUNT:-0}" -eq 0 ] || [ "${COMPAT_GE_75:-0}" -ne 1 ]; then
-    log "No compatible NVIDIA GPU (compute capability >= 7.5) detected; shutting down."
-    exit 0
-fi
+log "GPU probe (post-switch): ${GPU_COUNT:-0} CUDA device(s); CC list: ${TORCH_CUDA_ARCH_LIST:-none}; strategy=${SAGE_STRATEGY:-fallback}"
 
-# --- Ensure package manager and Manager deps are available ---
-# Ensure python -m pip works (bootstrap if needed)
+# Ensure pip works
 python -m pip --version >/dev/null 2>&1 || python -m ensurepip --upgrade >/dev/null 2>&1 || true
 python -m pip --version >/dev/null 2>&1 || log "WARNING: pip still not available after ensurepip"
 
-# Ensure ComfyUI-Manager minimal Python deps
-python - <<'PY' || python -m pip install --no-cache-dir --user toml || true
+# Ensure minimal Python deps for ComfyUI-Manager (pre-baked, but verify)
+python - <<'PY' || python -m pip install --no-cache-dir toml GitPython || true
 import sys
-try:
-    import toml  # noqa
-    sys.exit(0)
-except Exception:
-    sys.exit(1)
+import importlib
+for m in ("toml","git"):
+    try: importlib.import_module(m)
+    except Exception: sys.exit(1)
+sys.exit(0)
 PY
 
 # --- SageAttention setup using probed data ---
@@ -296,7 +314,7 @@ if [ ! -f "$FIRST_RUN_FLAG" ] || [ "${COMFY_FORCE_INSTALL:-0}" = "1" ]; then
             [ "$base" = "ComfyUI-Manager" ] && continue
             if [ -f "$d/requirements.txt" ]; then
                 log "Installing requirements for node: $base"
-                python -m pip install --no-cache-dir --user --upgrade --upgrade-strategy only-if-needed -r "$d/requirements.txt" || true
+                python -m pip install --no-cache-dir --upgrade --upgrade-strategy only-if-needed -r "$d/requirements.txt" || true
             fi
             if [ -f "$d/install.py" ]; then
                 log "Running install.py for node: $base"
@@ -312,25 +330,6 @@ if [ ! -f "$FIRST_RUN_FLAG" ] || [ "${COMFY_FORCE_INSTALL:-0}" = "1" ]; then
 else
     log "Not first run; skipping custom_nodes dependency install"
 fi
-
-# --- Ensure ONNX Runtime has CUDA provider (GPU) ---
-python - <<'PY' || 
-import sys
-try:
-    import onnxruntime as ort
-    ok = "CUDAExecutionProvider" in ort.get_available_providers()
-    sys.exit(0 if ok else 1)
-except Exception:
-    sys.exit(1)
-PY
-    log "Installing onnxruntime-gpu for CUDAExecutionProvider..."
-    python -m pip uninstall -y onnxruntime || true
-    python -m pip install --no-cache-dir --user "onnxruntime-gpu>=1.19" || true
-    python - <<'P2' || log "WARNING: ONNX Runtime CUDA provider not available after installation"
-import onnxruntime as ort, sys
-print("ORT providers:", ort.get_available_providers())
-sys.exit(0 if "CUDAExecutionProvider" in ort.get_available_providers() else 1)
-P2
 
 # --- launch ComfyUI ---
 COMFYUI_ARGS=""
