@@ -25,6 +25,21 @@ log() { echo "[$(date '+%H:%M:%S')] $1"; }
 # Make newly created files group-writable (helps in shared volumes)
 umask 0002
 
+# --- quick GPU presence check (nvidia-smi) ---
+quick_check_gpus() {
+    if ! out="$(nvidia-smi -L 2>/dev/null)"; then
+        log "GPU quick check failed (nvidia-smi not available); shutting down."
+        exit 0
+    fi
+    local count
+    count="$(printf "%s\n" "$out" | grep -c '^GPU [0-9]\+:')"
+    if [ "${count:-0}" -lt 1 ]; then
+        log "GPU quick check found 0 NVIDIA devices; shutting down."
+        exit 0
+    fi
+    log "GPU quick check passed"
+}
+
 # --- build parallelism (single knob) ---
 decide_build_jobs() {
     if [ -n "${SAGE_MAX_JOBS:-}" ]; then echo "$SAGE_MAX_JOBS"; return; fi
@@ -98,7 +113,6 @@ print(f"TORCH_CUDA_ARCH_LIST='{arch_list}'")
 for k,v in flags.items():
     print(f"{k}={'true' if v else 'false'}")
 print(f"SAGE_STRATEGY='{strategy}'")
-# stderr: detailed device list
 print(f"[GPU] {n} CUDA device(s); CC list: {arch_list or 'none'}; strategy={strategy}; compat>=7.5:{compat}", file=sys.stderr)
 for i,(nm,cc,mb) in enumerate(zip(names, ccs, mems)):
     print(f"[GPU] cuda:{i} - {nm} (CC {cc}, {mb} MB)", file=sys.stderr)
@@ -160,6 +174,8 @@ build_sage_attention_mixed() {
     if MAX_JOBS="${jobs}" python -m pip install --no-build-isolation .; then
         echo "${SAGE_BUILD_STRATEGY:-${SAGE_STRATEGY:-fallback}}|${TORCH_CUDA_ARCH_LIST:-}" > "$SAGE_ATTENTION_BUILT_FLAG"
         log "SageAttention built successfully"
+        # cleanup cloned sources to save space; keep .built flag
+        cd "$SAGE_ATTENTION_DIR" && rm -rf "SageAttention" || true
         cd "$BASE_DIR"; return 0
     else
         log "ERROR: SageAttention build failed"
@@ -217,7 +233,6 @@ seed_flag = pathlib.Path(sys.argv[2])
 cfg_dir = cfg_path.parent
 cfg_dir.mkdir(parents=True, exist_ok=True)
 
-# Collect CM_* envs -> [default] keys
 def norm_bool(v:str):
     t=v.strip().lower()
     if t in ("1","true","yes","on"): return "True"
@@ -238,7 +253,6 @@ if cfg_path.exists():
 if "default" not in cfg:
     cfg["default"] = {}
 
-# If first boot for config, fully recreate default section from env
 if first_seed:
     cfg["default"].clear()
     for k,v in sorted(env_items.items()):
@@ -249,7 +263,6 @@ if first_seed:
     seed_flag.touch()
     print(f"[CFG] created: {cfg_path} with {len(env_items)} CM_ keys", file=sys.stderr)
 else:
-    # Subsequent boots: apply only provided CM_ overrides; keep others
     for k,v in env_items.items():
         if cfg["default"].get(k) != v:
             cfg["default"][k] = v
@@ -261,21 +274,28 @@ else:
 PY
 }
 
-# --- early GPU probe and exit (before heavy setup) ---
-eval "$(probe_and_prepare_gpu)"
-export SAGE_BUILD_STRATEGY="${SAGE_STRATEGY:-fallback}"
-log "GPU probe: ${GPU_COUNT:-0} CUDA device(s); CC list: ${TORCH_CUDA_ARCH_LIST:-none}; strategy=${SAGE_BUILD_STRATEGY}"
-if [ "${GPU_COUNT:-0}" -eq 0 ]; then
-    log "No NVIDIA GPU detected; shutting down."
-    exit 0
-fi
-if [ "${COMPAT_GE_75:-0}" -ne 1 ]; then
-    log "GPU compute capability < 7.5; shutting down."
-    exit 0
+# --- start: quick check then thorough probe (root only) ---
+if [ -z "${GPU_QUICK_CHECK_DONE:-}" ]; then
+    quick_check_gpus
 fi
 
-# --- root to runtime user ---
 if [ "$(id -u)" = "0" ]; then
+    # thorough probe & strategy (visible log once)
+    eval "$(probe_and_prepare_gpu)"
+    # export all needed vars so app-user pass doesn't re-probe
+    export GPU_COUNT COMPAT_GE_75 TORCH_CUDA_ARCH_LIST SAGE_STRATEGY
+    export SAGE_BUILD_STRATEGY="${SAGE_STRATEGY:-fallback}"
+    log "GPU probe: ${GPU_COUNT:-0} CUDA device(s); CC list: ${TORCH_CUDA_ARCH_LIST:-none}; strategy=${SAGE_BUILD_STRATEGY}"
+    if [ "${GPU_COUNT:-0}" -eq 0 ]; then
+        log "No NVIDIA GPU detected; shutting down."
+        exit 0
+    fi
+    if [ "${COMPAT_GE_75:-0}" -ne 1 ]; then
+        log "GPU compute capability < 7.5; shutting down."
+        exit 0
+    fi
+
+    # permissions and user switch
     if [ ! -f "$PERMISSIONS_SET_FLAG" ]; then
         log "Setting up user permissions..."
         if getent group "${PGID}" >/dev/null; then
@@ -285,7 +305,6 @@ if [ "$(id -u)" = "0" ]; then
         mkdir -p "/home/${APP_USER}"
         for d in "$BASE_DIR" "/home/$APP_USER"; do [ -e "$d" ] && chown -R "${APP_USER}:${APP_GROUP}" "$d" || true; done
 
-        # Make system site-packages writable by the runtime user (no venvs; system-wide installs)
         readarray -t PY_PATHS < <(python - <<'PY'
 import sys, sysconfig, os, site, datetime
 def log(m): print(f"[bootstrap:python {datetime.datetime.now().strftime('%H:%M:%S')}] {m}", file=sys.stderr, flush=True)
@@ -326,15 +345,14 @@ PY
     else
         log "User permissions already configured, skipping..."
     fi
-    exec runuser -u "${APP_USER}" -- "$0" "$@"
+
+    # flag and preserve env across user switch; skip quick check as app user
+    export GPU_QUICK_CHECK_DONE=1
+    exec runuser -p -u "${APP_USER}" -- "$0" "$@"
 fi
 
-# From here on, running as $APP_USER
-
-# --- refresh GPU probe after user switch (no exit) ---
-eval "$(probe_and_prepare_gpu)"
-export SAGE_BUILD_STRATEGY="${SAGE_STRATEGY:-fallback}"
-log "GPU probe (post-switch): ${GPU_COUNT:-0} CUDA device(s); CC list: ${TORCH_CUDA_ARCH_LIST:-none}; strategy=${SAGE_BUILD_STRATEGY}"
+# --- From here on, running as $APP_USER ---
+# No quick check or probe here; variables were preserved
 
 # --- SageAttention setup using probed data ---
 setup_sage_attention
