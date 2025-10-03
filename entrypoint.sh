@@ -12,9 +12,12 @@ SAGE_ATTENTION_DIR="$BASE_DIR/.sage_attention"
 SAGE_ATTENTION_BUILT_FLAG="$SAGE_ATTENTION_DIR/.built"
 PERMISSIONS_SET_FLAG="$BASE_DIR/.permissions_set"
 FIRST_RUN_FLAG="$BASE_DIR/.first_run_done"
-CFG_DIR="$BASE_DIR/user/default/ComfyUI-Manager"
-CFG_FILE="$CFG_DIR/config.ini"
-CFG_SEEDED_FLAG="$CFG_DIR/.cm_seeded"
+
+# Manager config (persistent)
+USER_DIR="$BASE_DIR/user"
+CM_CFG_DIR="$USER_DIR/default/ComfyUI-Manager"
+CM_CFG="$CM_CFG_DIR/config.ini"
+CM_SEEDED_FLAG="$CM_CFG_DIR/.config_seeded"
 
 # --- logging ---
 log() { echo "[$(date '+%H:%M:%S')] $1"; }
@@ -55,20 +58,15 @@ if not torch.cuda.is_available():
 n = torch.cuda.device_count()
 ccs = []
 names = []
-vram = []
+mems = []
 flags = {"DET_TURING":False,"DET_AMP80":False,"DET_AMP86":False,"DET_AMP87":False,"DET_ADA":False,"DET_HOPPER":False,"DET_BW12":False,"DET_BW10":False}
 compat = False
 for i in range(n):
     p = torch.cuda.get_device_properties(i)
     mj, mn = p.major, p.minor
-    c = f"{mj}.{mn}"
-    ccs.append(c)
+    ccs.append(f"{mj}.{mn}")
     names.append(p.name)
-    try:
-        mem_mib = int(p.total_memory // (1024**2))
-    except Exception:
-        mem_mib = 0
-    vram.append(str(mem_mib))
+    mems.append(int(getattr(p, "total_memory", 0) // (1024**2)))  # MB
     if (mj,mn)==(7,5): flags["DET_TURING"]=True
     elif (mj,mn)==(8,0): flags["DET_AMP80"]=True
     elif (mj,mn)==(8,6): flags["DET_AMP86"]=True
@@ -100,19 +98,15 @@ print(f"TORCH_CUDA_ARCH_LIST='{arch_list}'")
 for k,v in flags.items():
     print(f"{k}={'true' if v else 'false'}")
 print(f"SAGE_STRATEGY='{strategy}'")
-# Detailed device report to stderr (single, comprehensive log)
-if n == 0:
-    print(f\"[GPU] Found 0 CUDA device(s)\", file=sys.stderr)
-else:
-    print(f\"[GPU] Found {n} CUDA device(s); CC list: {arch_list or 'none'}; strategy={strategy}; compat>=7.5:{compat}\", file=sys.stderr)
-    for i,(nm,cc,vm) in enumerate(zip(names, ccs, vram)):
-        print(f\"[GPU] #{i}: {nm} | CC {cc} | VRAM {vm} MiB\", file=sys.stderr)
+# stderr: detailed device list
+print(f"[GPU] {n} CUDA device(s); CC list: {arch_list or 'none'}; strategy={strategy}; compat>=7.5:{compat}", file=sys.stderr)
+for i,(nm,cc,mb) in enumerate(zip(names, ccs, mems)):
+    print(f"[GPU] cuda:{i} - {nm} (CC {cc}, {mb} MB)", file=sys.stderr)
 PY
 }
 
 # --- Triton management (conditional, system-wide) ---
 install_triton_version() {
-    # Query existing version; only change if strategy truly requires
     local cur=""
     cur="$(python - <<'PY' 2>/dev/null || true
 try:
@@ -122,78 +116,49 @@ except Exception:
     pass
 PY
 )"
-    case "${SAGE_STRATEGY:-fallback}" in
+    case "${SAGE_BUILD_STRATEGY:-${SAGE_STRATEGY:-fallback}}" in
         "mixed_with_turing"|"turing_only")
             if [ "$cur" != "3.2.0" ]; then
-                log "Setting Triton to 3.2.0 for Turing compatibility (current: ${cur:-none})"
+                log "Installing Triton 3.2.0 for Turing compatibility (current: ${cur:-none})"
                 python -m pip install --no-cache-dir "triton==3.2.0" || true
             else
                 log "Triton 3.2.0 already present; skipping"
             fi
             ;;
         *)
-            # Image bakes Triton==3.4.0; leave as-is for Ampere/Ada/Hopper/Blackwell
             log "Using baked Triton (${cur:-unknown}); no change"
             ;;
     esac
 }
 
-test_sage_attention() {
-    python - <<'PY' 2>/dev/null
-import sys
-try:
-    import sageattention
-    print("[TEST] SageAttention import: SUCCESS")
-    v=getattr(sageattention,'__version__',None)
-    if v: print(f"[TEST] Version: {v}")
-    sys.exit(0)
-except ImportError as e:
-    print(f"[TEST] SageAttention import: FAILED - {e}")
-    sys.exit(1)
-except Exception as e:
-    print(f"[TEST] SageAttention test: ERROR - {e}")
-    sys.exit(1)
-PY
-}
-
-build_sage_attention() {
-    mkdir -p "$SAGE_ATTENTION_DIR"
-    cd "$SAGE_ATTENTION_DIR"
+build_sage_attention_mixed() {
+    log "Building SageAttention..."
+    mkdir -p "$SAGE_ATTENTION_DIR"; cd "$SAGE_ATTENTION_DIR"
     export TORCH_CUDA_ARCH_LIST="${SAGE_ARCH_LIST_OVERRIDE:-${TORCH_CUDA_ARCH_LIST:-}}"
     if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ]; then
         TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0"
     fi
-    log "Building SageAttention (ARCHS=$TORCH_CUDA_ARCH_LIST)"
-    case "${SAGE_STRATEGY:-fallback}" in
+    log "Set TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST"
+
+    case "${SAGE_BUILD_STRATEGY:-${SAGE_STRATEGY:-fallback}}" in
         "mixed_with_turing"|"turing_only")
-            if [ -d "SageAttention/.git" ]; then
-                cd SageAttention
-                git fetch --depth 1 origin || return 1
-                git checkout v1.0 2>/dev/null || git checkout -b v1.0 origin/v1.0 || return 1
-                git reset --hard origin/v1.0 || return 1
-            else
-                rm -rf SageAttention
-                git clone --depth 1 https://github.com/thu-ml/SageAttention.git -b v1.0 || return 1
-                cd SageAttention
-            fi
+            log "Cloning SageAttention v1.0 for Turing"
+            if [ -d "SageAttention/.git" ]; then cd SageAttention; git fetch --depth 1 origin || return 1; git checkout v1.0 2>/dev/null || git checkout -b v1.0 origin/v1.0 || return 1; git reset --hard origin/v1.0 || return 1
+            else rm -rf SageAttention; git clone --depth 1 https://github.com/thu-ml/SageAttention.git -b v1.0 || return 1; cd SageAttention; fi
             ;;
         *)
-            if [ -d "SageAttention/.git" ]; then
-                cd SageAttention
-                git fetch --depth 1 origin || return 1
-                git reset --hard origin/main || return 1
-            else
-                rm -rf SageAttention
-                git clone --depth 1 https://github.com/thu-ml/SageAttention.git || return 1
-                cd SageAttention
-            fi
+            log "Cloning latest SageAttention"
+            if [ -d "SageAttention/.git" ]; then cd SageAttention; git fetch --depth 1 origin || return 1; git reset --hard origin/main || return 1
+            else rm -rf SageAttention; git clone --depth 1 https://github.com/thu-ml/SageAttention.git || return 1; cd SageAttention; fi
             ;;
     esac
+
     [ "${SAGE_VERBOSE_BUILD:-0}" = "1" ] && export TORCH_CPP_BUILD_VERBOSE=1
     local jobs; jobs="$(decide_build_jobs)"
-    log "Compiling SageAttention (MAX_JOBS=${jobs})"
+    log "Using MAX_JOBS=${jobs} for SageAttention build"
+
     if MAX_JOBS="${jobs}" python -m pip install --no-build-isolation .; then
-        echo "${SAGE_STRATEGY:-fallback}|${TORCH_CUDA_ARCH_LIST:-}" > "$SAGE_ATTENTION_BUILT_FLAG"
+        echo "${SAGE_BUILD_STRATEGY:-${SAGE_STRATEGY:-fallback}}|${TORCH_CUDA_ARCH_LIST:-}" > "$SAGE_ATTENTION_BUILT_FLAG"
         log "SageAttention built successfully"
         cd "$BASE_DIR"; return 0
     else
@@ -206,83 +171,107 @@ needs_rebuild() {
     if [ ! -f "$SAGE_ATTENTION_BUILT_FLAG" ]; then return 0; fi
     local x; x=$(cat "$SAGE_ATTENTION_BUILT_FLAG" 2>/dev/null || echo "")
     local prev_strategy="${x%%|*}"; local prev_arch="${x#*|}"
-    if [ "$prev_strategy" != "${SAGE_STRATEGY:-fallback}" ] || [ "$prev_arch" != "${TORCH_CUDA_ARCH_LIST:-}" ]; then return 0; fi
+    if [ "$prev_strategy" != "${SAGE_BUILD_STRATEGY:-${SAGE_STRATEGY:-fallback}}" ] || [ "$prev_arch" != "${TORCH_CUDA_ARCH_LIST:-}" ]; then return 0; fi
     return 1
+}
+
+test_sage_attention() {
+    python -c "
+import sys
+try:
+    import sageattention; print('[TEST] SageAttention import: SUCCESS')
+    v=getattr(sageattention,'__version__',None)
+    if v: print(f'[TEST] Version: {v}'); sys.exit(0)
+except ImportError as e:
+    print(f'[TEST] SageAttention import: FAILED - {e}'); sys.exit(1)
+except Exception as e:
+    print(f'[TEST] SageAttention test: ERROR - {e}'); sys.exit(1)
+" 2>/dev/null
 }
 
 setup_sage_attention() {
     export SAGE_ATTENTION_BUILT=0 SAGE_ATTENTION_AVAILABLE=0
-    if [ "${GPU_COUNT:-0}" -eq 0 ]; then log "No GPUs detected, skipping SageAttention"; return 0; fi
+    if [ "${GPU_COUNT:-0}" -eq 0 ]; then log "No GPUs detected, skipping SageAttention setup"; return 0; fi
     if [ "${COMPAT_GE_75:-0}" -ne 1 ]; then log "GPU compute capability < 7.5; skipping SageAttention"; return 0; fi
-    if needs_rebuild || ! test_sage_attention >/dev/null; then
-        log "Preparing SageAttention"
-        if install_triton_version && build_sage_attention && test_sage_attention >/dev/null; then
+    if needs_rebuild || ! test_sage_attention; then
+        install_triton_version
+        if build_sage_attention_mixed && test_sage_attention; then
             export SAGE_ATTENTION_BUILT=1 SAGE_ATTENTION_AVAILABLE=1
-            log "SageAttention is available; set FORCE_SAGE_ATTENTION=1 to enable at startup"
+            log "SageAttention is built; set FORCE_SAGE_ATTENTION=1 to enable it at startup"
         else
             export SAGE_ATTENTION_BUILT=0 SAGE_ATTENTION_AVAILABLE=0
             log "WARNING: SageAttention is not available after build attempt"
         fi
     else
         export SAGE_ATTENTION_BUILT=1 SAGE_ATTENTION_AVAILABLE=1
-        log "SageAttention already available"
+        log "SageAttention already built and importable"
     fi
-    # Strategy is only needed for build decisions; clear after setup to avoid confusion
-    unset SAGE_STRATEGY
 }
 
-# --- Manager config from CM_* env ---
-configure_manager_from_env() {
-    mkdir -p "$CFG_DIR" || true
-    # Collect CM_* into an INI under [default]
-    # First-boot: replace config.ini; subsequent: reconcile keys differing from env
-    python - "$CFG_FILE" "$CFG_SEEDED_FLAG" <<'PY'
+# --- ComfyUI-Manager config from CM_* env ---
+configure_manager_config() {
+python - "$CM_CFG" "$CM_SEEDED_FLAG" <<'PY'
 import os, sys, configparser, pathlib
-cfg_file = pathlib.Path(sys.argv[1])
+cfg_path = pathlib.Path(sys.argv[1])
 seed_flag = pathlib.Path(sys.argv[2])
-# Collect CM_* environment variables
-env_pairs = {}
+cfg_dir = cfg_path.parent
+cfg_dir.mkdir(parents=True, exist_ok=True)
+
+# Collect CM_* envs -> [default] keys
+def norm_bool(v:str):
+    t=v.strip().lower()
+    if t in ("1","true","yes","on"): return "True"
+    if t in ("0","false","no","off"): return "False"
+    return v
+
+env_items = {}
 for k,v in os.environ.items():
     if not k.startswith("CM_"): continue
     key = k[3:].lower()
-    env_pairs[key] = v
+    env_items[key] = norm_bool(v)
+
 cfg = configparser.ConfigParser()
-if not seed_flag.exists() or not cfg_file.exists():
-    # First-boot: (re)create from CM_* exclusively
+first_seed = not seed_flag.exists()
+if cfg_path.exists():
+    cfg.read(cfg_path)
+
+if "default" not in cfg:
     cfg["default"] = {}
-    for k,v in env_pairs.items():
+
+# If first boot for config, fully recreate default section from env
+if first_seed:
+    cfg["default"].clear()
+    for k,v in sorted(env_items.items()):
         cfg["default"][k] = v
-    cfg_file.write_text("", encoding="utf-8")
-    with cfg_file.open("w", encoding="utf-8") as f:
+    cfg_path.write_text("", encoding="utf-8")
+    with cfg_path.open("w", encoding="utf-8") as f:
         cfg.write(f)
-    seed_flag.parent.mkdir(parents=True, exist_ok=True)
-    seed_flag.write_text("seeded", encoding="utf-8")
-    sys.exit(0)
-# Subsequent boots: reconcile only CM_* keys
-cfg.read(cfg_file, encoding="utf-8")
-if "default" not in cfg: cfg["default"] = {}
-changed = False
-for k,v in env_pairs.items():
-    if cfg["default"].get(k) != v:
-        cfg["default"][k] = v
-        changed = True
-if changed:
-    with cfg_file.open("w", encoding="utf-8") as f:
+    seed_flag.touch()
+    print(f"[CFG] created: {cfg_path} with {len(env_items)} CM_ keys", file=sys.stderr)
+else:
+    # Subsequent boots: apply only provided CM_ overrides; keep others
+    for k,v in env_items.items():
+        if cfg["default"].get(k) != v:
+            cfg["default"][k] = v
+    tmp = cfg_path.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
         cfg.write(f)
+    tmp.replace(cfg_path)
+    print(f"[CFG] updated: {cfg_path} applied {len(env_items)} CM_ keys", file=sys.stderr)
 PY
 }
 
 # --- early GPU probe and exit (before heavy setup) ---
-if [ -z "${SKIP_EARLY_PROBE:-}" ]; then
-    eval "$(probe_and_prepare_gpu)"
-    if [ "${GPU_COUNT:-0}" -eq 0 ]; then
-        log "No NVIDIA GPU detected; shutting down."
-        exit 0
-    fi
-    if [ "${COMPAT_GE_75:-0}" -ne 1 ]; then
-        log "GPU compute capability < 7.5; shutting down."
-        exit 0
-    fi
+eval "$(probe_and_prepare_gpu)"
+export SAGE_BUILD_STRATEGY="${SAGE_STRATEGY:-fallback}"
+log "GPU probe: ${GPU_COUNT:-0} CUDA device(s); CC list: ${TORCH_CUDA_ARCH_LIST:-none}; strategy=${SAGE_BUILD_STRATEGY}"
+if [ "${GPU_COUNT:-0}" -eq 0 ]; then
+    log "No NVIDIA GPU detected; shutting down."
+    exit 0
+fi
+if [ "${COMPAT_GE_75:-0}" -ne 1 ]; then
+    log "GPU compute capability < 7.5; shutting down."
+    exit 0
 fi
 
 # --- root to runtime user ---
@@ -295,7 +284,8 @@ if [ "$(id -u)" = "0" ]; then
         usermod -o -u "${PUID}" "${APP_USER}" || true
         mkdir -p "/home/${APP_USER}"
         for d in "$BASE_DIR" "/home/$APP_USER"; do [ -e "$d" ] && chown -R "${APP_USER}:${APP_GROUP}" "$d" || true; done
-        # Make system site-packages writable by the runtime user (system-wide installs; no venvs)
+
+        # Make system site-packages writable by the runtime user (no venvs; system-wide installs)
         readarray -t PY_PATHS < <(python - <<'PY'
 import sys, sysconfig, os, site, datetime
 def log(m): print(f"[bootstrap:python {datetime.datetime.now().strftime('%H:%M:%S')}] {m}", file=sys.stderr, flush=True)
@@ -325,26 +315,26 @@ PY
             chown -R "${APP_USER}:${APP_GROUP}" "$d" || true
             chmod -R u+rwX,g+rwX "$d" || true
         done
+
         if [ -d "/usr/local/lib/python3.12/site-packages" ]; then
             chown -R "${APP_USER}:${APP_GROUP}" /usr/local/lib/python3.12/site-packages || true
             chmod -R u+rwX,g+rwX /usr/local/lib/python3.12/site-packages || true
         fi
+
         touch "$PERMISSIONS_SET_FLAG"; chown "${APP_USER}:${APP_GROUP}" "$PERMISSIONS_SET_FLAG"
         log "User permissions configured"
     else
         log "User permissions already configured, skipping..."
     fi
-    exec env SKIP_EARLY_PROBE=1 runuser -u "${APP_USER}" -- "$0" "$@"
+    exec runuser -u "${APP_USER}" -- "$0" "$@"
 fi
 
 # From here on, running as $APP_USER
-export PIP_PREFER_BINARY=1
 
-# Probe again silently to set build variables (no duplicate GPU logs)
+# --- refresh GPU probe after user switch (no exit) ---
 eval "$(probe_and_prepare_gpu)"
-
-# Configure ComfyUI-Manager from CM_* env
-configure_manager_from_env
+export SAGE_BUILD_STRATEGY="${SAGE_STRATEGY:-fallback}"
+log "GPU probe (post-switch): ${GPU_COUNT:-0} CUDA device(s); CC list: ${TORCH_CUDA_ARCH_LIST:-none}; strategy=${SAGE_BUILD_STRATEGY}"
 
 # --- SageAttention setup using probed data ---
 setup_sage_attention
@@ -363,7 +353,7 @@ fi
 # --- first-run install of custom_nodes ---
 if [ ! -f "$FIRST_RUN_FLAG" ] || [ "${COMFY_FORCE_INSTALL:-0}" = "1" ]; then
     if [ "${COMFY_AUTO_INSTALL:-1}" = "1" ]; then
-        log "Installing custom node dependencies (first run/forced)"
+        log "First run or forced; installing custom node dependencies..."
         shopt -s nullglob
         for d in "$CUSTOM_NODES_DIR"/*; do
             [ -d "$d" ] || continue
@@ -388,20 +378,24 @@ else
     log "Not first run; skipping custom_nodes dependency install"
 fi
 
+# --- ComfyUI-Manager config: create/update from CM_* just before launch ---
+configure_manager_config
+
 # --- launch ComfyUI ---
 COMFYUI_ARGS=""
-if [ "${FORCE_SAGE_ATTENTION:-0}" = "1" ] && test_sage_attention >/dev/null; then
+if [ "${FORCE_SAGE_ATTENTION:-0}" = "1" ] && test_sage_attention; then
     COMFYUI_ARGS="--use-sage-attention"
     log "Starting ComfyUI with SageAttention (FORCE_SAGE_ATTENTION=1)"
 else
     if [ "${SAGE_ATTENTION_AVAILABLE:-0}" = "1" ]; then
-        log "SageAttention is available; set FORCE_SAGE_ATTENTION=1 to enable"
+        log "SageAttention is built; set FORCE_SAGE_ATTENTION=1 to enable"
     else
         log "SageAttention not available; starting without it"
     fi
 fi
 
 cd "$BASE_DIR"
+unset SAGE_BUILD_STRATEGY
 if [ $# -eq 0 ]; then
     exec python main.py --listen 0.0.0.0 $COMFYUI_ARGS
 else
