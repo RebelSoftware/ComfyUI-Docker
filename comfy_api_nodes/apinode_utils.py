@@ -269,7 +269,7 @@ def tensor_to_bytesio(
         mime_type: Target image MIME type (e.g., 'image/png', 'image/jpeg', 'image/webp', 'video/mp4').
 
     Returns:
-        Named BytesIO object containing the image data.
+        Named BytesIO object containing the image data, with pointer set to the start of buffer.
     """
     if not mime_type:
         mime_type = "image/png"
@@ -431,7 +431,7 @@ async def upload_video_to_comfyapi(
                     f"Video duration ({actual_duration:.2f}s) exceeds the maximum allowed ({max_duration}s)."
                 )
         except Exception as e:
-            logging.error(f"Error getting video duration: {e}")
+            logging.error("Error getting video duration: %s", str(e))
             raise ValueError(f"Could not verify video duration from source: {e}") from e
 
     upload_mime_type = f"video/{container.value.lower()}"
