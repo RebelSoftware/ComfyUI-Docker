@@ -78,7 +78,6 @@ jobs:
     needs: check-upstream
     if: needs.check-upstream.outputs.new_version != 'none'
     runs-on: ubuntu-latest
-    continue-on-error: true
     outputs:
       built:  ${{ steps.mark.outputs.built }}
       digest: ${{ steps.build.outputs.digest }}
@@ -182,10 +181,16 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
             ${{ env.IMAGE_NAME }}:latest
 
-      - name: Mark build success
+      - name: Mark build result
         id: mark
-        if: ${{ success() && steps.build.outputs.digest != '' }}
-        run: echo "built=true" >> "$GITHUB_OUTPUT"
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ -n "${{ steps.build.outputs.digest }}" ]; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+          fi
 
   build-self:
     name: Build on Self-Hosted (fallback)
@@ -272,10 +277,16 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ needs.check-upstream.outputs.new_version }}
             ${{ env.IMAGE_NAME }}:latest
 
-      - name: Mark build success
+      - name: Mark build result
         id: mark
-        if: ${{ success() && steps.build.outputs.digest != '' }}
-        run: echo "built=true" >> "$GITHUB_OUTPUT"
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ -n "${{ steps.build.outputs.digest }}" ]; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Remove BuildKit image (moby/buildkit)
         if: ${{ always() }}
