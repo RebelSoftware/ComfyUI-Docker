@@ -40,13 +40,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && dpkg -i cuda-keyring_1.1-1_all.deb \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-    cuda-nvcc-12-9 \
-    cuda-cudart-dev-12-9 \
-    libcusparse-dev-12-9 \
-    libcublas-dev-12-9 \
-    libcurand-dev-12-9 \
-    libcusolver-dev-12-9 \
-    libcufft-dev-12-9 \
+    cuda-nvcc-12-8 \
+    cuda-cudart-dev-12-8 \
+    libcusparse-dev-12-8 \
+    libcublas-dev-12-8 \
+    libcurand-dev-12-8 \
+    libcusolver-dev-12-8 \
+    libcufft-dev-12-8 \
     nvidia-smi \
  && rm -rf /var/lib/apt/lists/* \
  && rm cuda-keyring_1.1-1_all.deb
@@ -58,12 +58,12 @@ RUN sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double        
     sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x) noexcept (true);/' /usr/local/cuda-12.9/include/crt/math_functions.h
 
 # Set CUDA paths for entrypoint compilation
-ENV CUDA_HOME=/usr/local/cuda-12.9 \
-    PATH=/usr/local/cuda-12.9/bin:${PATH} \
-    LD_LIBRARY_PATH=/usr/local/cuda-12.9/lib64
+ENV CUDA_HOME=/usr/local/cuda-12.8 \
+    PATH=/usr/local/cuda-12.8/bin:${PATH} \
+    LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64
 
 # Create symlink for compatibility
-RUN ln -sf /usr/local/cuda-12.9 /usr/local/cuda
+RUN ln -sf /usr/local/cuda-12.8 /usr/local/cuda
 
 # Create runtime user/group
 RUN set -e; \
@@ -88,9 +88,9 @@ WORKDIR /app/ComfyUI
 # Copy requirements with optional handling
 COPY requirements.txt* ./
 
-# Core Python deps (torch CUDA 12.9, pin Triton, plus common deps)
+# Core Python deps (torch CUDA 12.8, pin Triton, plus common deps)
 RUN python -m pip install --upgrade pip setuptools wheel \
- && python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu129 \
+ && python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 \
  && python -m pip install "triton==3.4.0" \
  && python -m pip install --prefer-binary cupy-cuda12x \
  && if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi \
