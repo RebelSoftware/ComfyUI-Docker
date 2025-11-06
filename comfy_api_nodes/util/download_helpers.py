@@ -12,8 +12,8 @@ from aiohttp.client_exceptions import ClientError, ContentTypeError
 
 from comfy_api.input_impl import VideoFromFile
 from comfy_api.latest import IO as COMFY_IO
-from comfy_api_nodes.apis import request_logger
 
+from . import request_logger
 from ._helpers import (
     default_base_url,
     get_auth_header,
@@ -232,11 +232,12 @@ async def download_url_to_video_output(
     video_url: str,
     *,
     timeout: float = None,
+    max_retries: int = 5,
     cls: type[COMFY_IO.ComfyNode] = None,
 ) -> VideoFromFile:
     """Downloads a video from a URL and returns a `VIDEO` output."""
     result = BytesIO()
-    await download_url_to_bytesio(video_url, result, timeout=timeout, cls=cls)
+    await download_url_to_bytesio(video_url, result, timeout=timeout, max_retries=max_retries, cls=cls)
     return VideoFromFile(result)
 
 
