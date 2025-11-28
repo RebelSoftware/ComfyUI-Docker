@@ -689,7 +689,7 @@ def load_models_gpu(models, memory_required=0, force_patch_weights=False, minimu
             loaded_memory = loaded_model.model_loaded_memory()
             current_free_mem = get_free_memory(torch_dev) + loaded_memory
 
-            lowvram_model_memory = max(128 * 1024 * 1024, (current_free_mem - minimum_memory_required), min(current_free_mem * MIN_WEIGHT_MEMORY_RATIO, current_free_mem - minimum_inference_memory()))
+            lowvram_model_memory = max(0, (current_free_mem - minimum_memory_required), min(current_free_mem * MIN_WEIGHT_MEMORY_RATIO, current_free_mem - minimum_inference_memory()))
             lowvram_model_memory = lowvram_model_memory - loaded_memory
 
             if lowvram_model_memory == 0:
@@ -1012,9 +1012,18 @@ def force_channels_last():
 
 
 STREAMS = {}
-NUM_STREAMS = 1
-if args.async_offload:
-    NUM_STREAMS = 2
+NUM_STREAMS = 0
+if args.async_offload is not None:
+    NUM_STREAMS = args.async_offload
+else:
+    #  Enable by default on Nvidia
+    if is_nvidia():
+        NUM_STREAMS = 2
+
+if args.disable_async_offload:
+    NUM_STREAMS = 0
+
+if NUM_STREAMS > 0:
     logging.info("Using async weight offloading with {} streams".format(NUM_STREAMS))
 
 def current_stream(device):
@@ -1030,7 +1039,7 @@ def current_stream(device):
 stream_counters = {}
 def get_offload_stream(device):
     stream_counter = stream_counters.get(device, 0)
-    if NUM_STREAMS <= 1:
+    if NUM_STREAMS == 0:
         return None
 
     if device in STREAMS:
