@@ -30,21 +30,17 @@ jobs:
             sudo apt-get install -y jq curl
           fi
 
-      - name: Determine current tag (release, then git fallback)
+      - name: Determine current tag from comfyui_version.py
         id: resolve
         shell: bash
         run: |
           set -euo pipefail
-          REPO="${GITHUB_REPOSITORY}"
-          TAG=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | jq -r .tag_name || echo "")
-          if [ -z "${TAG}" ] || [ "${TAG}" = "null" ]; then
-            TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
-          fi
-          if [ -z "${TAG}" ]; then
-            echo "No existing release or tag found; aborting." >&2
+          VER=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' comfyui_version.py | tr -d '\r')
+          if [ -z "${VER}" ]; then
+            echo "Could not read version from comfyui_version.py; aborting." >&2
             exit 1
           fi
-          echo "current_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "current_tag=v${VER}" >> "$GITHUB_OUTPUT"
 
   build-gh:
     name: Build on GitHub Runner (primary)
