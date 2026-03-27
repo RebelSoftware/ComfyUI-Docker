@@ -23,7 +23,7 @@
 ## About
 This image packages upstream [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with CUDA-enabled PyTorch and an entrypoint that handles volume permissions and custom node setup.
 
-The base image is python:3.12-slim (Debian bookworm) with CUDA 12.8 developer libraries installed via apt and PyTorch installed from the cu128 wheel index.
+The base image is python:3.12-slim (Debian trixie) with CUDA 12.8 developer libraries installed via apt and PyTorch installed from the cu128 wheel index.
 
 It syncs with the upstream ComfyUI repository, builds a Docker image on new releases, and pushes it to GitHub Container Registry (GHCR).
 
@@ -33,7 +33,7 @@ I created this repo for myself as a simple way to stay up to date with the lates
 
 ## Features
 - Daily checks for upstream releases, auto-merges changes, and builds/pushes Docker images.
-- CUDA-enabled PyTorch + Triton on Debian bookworm with CUDA 12.8 dev libs so custom CUDA builds work at runtime.
+- CUDA-enabled PyTorch + Triton on Debian trixie with CUDA 12.8 dev libs so custom CUDA builds work at runtime.
 - Non-root runtime with PUID/PGID mapping handled by entrypoint for volume permissions.
 - ComfyUI-Manager auto-sync on startup; entrypoint scans custom_nodes and installs requirements when COMFY_AUTO_INSTALL=1.
 - SageAttention build-on-start for compatible NVIDIA GPUs (Turing/SM 7.5+); enabling is opt-in via FORCE_SAGE_ATTENTION=1.
