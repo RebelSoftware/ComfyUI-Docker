@@ -1,4 +1,4 @@
-FROM python:3.14.3-slim-trixie
+FROM python:3.12.13-slim-trixie
 
 # Environment
 ENV DEBIAN_FRONTEND=noninteractive \
