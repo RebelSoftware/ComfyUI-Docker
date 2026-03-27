@@ -1,5 +1,6 @@
-# Use a recent slim base image
-FROM python:3.12.11-slim-trixie
+# Use bookworm (Debian 12 stable) — trixie's apt rejects NVIDIA's SHA1-signed
+# CUDA repo key since 2026-02-01, and the CUDA keyring targets debian12.
+FROM python:3.12-slim-bookworm
 
 # Environment
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -35,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     patch \
     pkg-config \
     libcairo2-dev \
- && echo "deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list.d/non-free.list \
+ && echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list.d/non-free.list \
  && wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb \
  && dpkg -i cuda-keyring_1.1-1_all.deb \
  && apt-get update \
@@ -50,12 +51,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nvidia-smi \
  && rm -rf /var/lib/apt/lists/* \
  && rm cuda-keyring_1.1-1_all.deb
-
-# Patch CUDA math_functions.h for glibc 2.41 compatibility
-RUN sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h && \
-    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h && \
-    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h && \
-    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h
 
 # Set CUDA paths for entrypoint compilation
 ENV CUDA_HOME=/usr/local/cuda-12.8 \
