@@ -91,7 +91,6 @@ COPY requirements.txt* ./
 # Core Python deps (torch CUDA 12.8, pin Triton, plus common deps)
 RUN python -m pip install --upgrade pip setuptools wheel \
  && python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 \
- && python -m pip install "triton==3.4.0" \
  && python -m pip install --prefer-binary cupy-cuda12x \
  && if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi \
  && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py onnxruntime-gpu \
