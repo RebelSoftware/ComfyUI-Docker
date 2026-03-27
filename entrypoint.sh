@@ -243,9 +243,9 @@ PY
             chmod -R u+rwX,g+rwX "$d" || true
         done
 
-        if [ -d "/usr/local/lib/python3.14/site-packages" ]; then
-            chown -R "${APP_USER}:${APP_GROUP}" /usr/local/lib/python3.14/site-packages || true
-            chmod -R u+rwX,g+rwX /usr/local/lib/python3.14/site-packages || true
+        if [ -d "/usr/local/lib/python3.12/site-packages" ]; then
+            chown -R "${APP_USER}:${APP_GROUP}" /usr/local/lib/python3.12/site-packages || true
+            chmod -R u+rwX,g+rwX /usr/local/lib/python3.12/site-packages || true
         fi
 
         touch "$PERMISSIONS_SET_FLAG"; chown "${APP_USER}:${APP_GROUP}" "$PERMISSIONS_SET_FLAG"
