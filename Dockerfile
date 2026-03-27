@@ -12,6 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     EXT_PARALLEL=4 \
     NVCC_APPEND_FLAGS="--threads 8" \
     MAX_JOBS=32 \
+    SAGE_ATTENTION_AVAILABLE=0 \
     COMFYUI_PATH=/app/ComfyUI \
     COMFYUI_MODEL_PATH=/app/ComfyUI/models \
     COMFYUI_MODELS_PATH=/app/ComfyUI/models

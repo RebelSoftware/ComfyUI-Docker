@@ -36,6 +36,7 @@ I created this repo for myself as a simple way to stay up to date with the lates
 - CUDA-enabled PyTorch + Triton on Debian trixie with CUDA 12.8 dev libs so custom CUDA builds work at runtime.
 - Non-root runtime with PUID/PGID mapping handled by entrypoint for volume permissions.
 - ComfyUI-Manager auto-sync on startup; entrypoint scans custom_nodes and installs requirements when COMFY_AUTO_INSTALL=1.
+- SageAttention build-on-start for compatible NVIDIA GPUs (Turing/SM 7.5+); enabling is opt-in via FORCE_SAGE_ATTENTION=1.
 
 ---
 
@@ -71,13 +72,7 @@ services:
       - TZ=America/Edmonton
       - PUID=1000
       - PGID=1000
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    gpus: all
     volumes:
       - comfyui_data:/app/ComfyUI/user/default
       - comfyui_nodes:/app/ComfyUI/custom_nodes
@@ -94,10 +89,19 @@ Run with `docker compose up -d`.
 - Open http://localhost:8188 after the container is up; change the external port via -p HOST:8188.
 - To target specific GPUs, use Docker's GPU device selections or Compose device_ids in reservations.
 
+### SageAttention
+SageAttention is compiled at container startup when a compatible GPU (Turing SM 7.5+) is detected and cached to a volume-mapped directory for subsequent starts. It delivers 2-5x faster attention vs FlashAttention for video and high-res image workflows.
+
+- To enable: set `FORCE_SAGE_ATTENTION=1`. If the build or import fails, ComfyUI starts normally without it.
+- The first startup with SageAttention will be slower due to compilation; subsequent starts use the cached build.
+- Turing GPUs (RTX 20xx) use the v1.0 branch with Triton 3.2.0; Ampere and newer use the latest release.
+
 ### Environment Variables
 - PUID/PGID: map container user to host UID/GID for volume write access.
 - COMFY_AUTO_INSTALL=1: auto-install Python requirements from custom_nodes on startup (default: 1).
 - COMFY_FORCE_INSTALL=1: force reinstall of custom_nodes requirements even after first run.
+- FORCE_SAGE_ATTENTION=0|1: compile and enable SageAttention on startup (requires compatible NVIDIA GPU).
+- SAGE_MAX_JOBS=N: override the number of parallel compile jobs for SageAttention (default: auto from RAM).
 - CM_*: seed ComfyUI-Manager config.ini keys on first start (e.g. CM_SKIP_UPDATE_CHECK=1).
 
 ---
