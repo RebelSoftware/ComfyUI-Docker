@@ -12,7 +12,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     EXT_PARALLEL=4 \
     NVCC_APPEND_FLAGS="--threads 8" \
     MAX_JOBS=32 \
-    SAGE_ATTENTION_AVAILABLE=0 \
     COMFYUI_PATH=/app/ComfyUI \
     COMFYUI_MODEL_PATH=/app/ComfyUI/models \
     COMFYUI_MODELS_PATH=/app/ComfyUI/models
@@ -52,10 +51,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm cuda-keyring_1.1-1_all.deb
 
 # Patch CUDA math_functions.h for glibc 2.41 compatibility
-RUN sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x) noexcept (true);/' /usr/local/cuda-12.9/include/crt/math_functions.h && \
-    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x) noexcept (true);/' /usr/local/cuda-12.9/include/crt/math_functions.h && \
-    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x) noexcept (true);/' /usr/local/cuda-12.9/include/crt/math_functions.h && \
-    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x) noexcept (true);/' /usr/local/cuda-12.9/include/crt/math_functions.h
+RUN sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h && \
+    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h && \
+    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h && \
+    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h
 
 # Set CUDA paths for entrypoint compilation
 ENV CUDA_HOME=/usr/local/cuda-12.8 \

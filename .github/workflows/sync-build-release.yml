@@ -306,7 +306,7 @@ jobs:
   publish:
     name: Publish Release
     needs: [check-upstream, build-gh, build-self]
-    if: needs.check-upstream.outputs.new_version != 'none' && (needs.build-gh.outputs.built == 'true' || needs.build-self.outputs.built == 'true')
+    if: ${{ always() && needs.check-upstream.outputs.new_version != 'none' && (needs.build-gh.outputs.built == 'true' || needs.build-self.outputs.built == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - name: Create GitHub Release
