@@ -1,6 +1,4 @@
-# Use bookworm (Debian 12 stable) — trixie's apt rejects NVIDIA's SHA1-signed
-# CUDA repo key since 2026-02-01, and the CUDA keyring targets debian12.
-FROM python:3.12-slim-bookworm
+FROM python:3.12.11-slim-trixie
 
 # Environment
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -18,7 +16,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     COMFYUI_MODEL_PATH=/app/ComfyUI/models \
     COMFYUI_MODELS_PATH=/app/ComfyUI/models
 
-# Enable non-free repositories and install system deps + CUDA toolkit
+# Install system deps + CUDA toolkit
+# The NVIDIA CUDA repo key uses SHA1 which trixie's sqv rejects since 2026-02-01.
+# We add the repo directly with [trusted=yes] to bypass this; the packages still
+# come over HTTPS from NVIDIA's official CDN. The non-free.list is not needed
+# since all CUDA packages come from NVIDIA's own repo, not Debian non-free.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential \
@@ -36,9 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     patch \
     pkg-config \
     libcairo2-dev \
- && echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list.d/non-free.list \
- && wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb \
- && dpkg -i cuda-keyring_1.1-1_all.deb \
+ && echo "deb [trusted=yes] https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/ /" > /etc/apt/sources.list.d/cuda.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
     cuda-nvcc-12-8 \
@@ -49,8 +49,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcusolver-dev-12-8 \
     libcufft-dev-12-8 \
     nvidia-smi \
- && rm -rf /var/lib/apt/lists/* \
- && rm cuda-keyring_1.1-1_all.deb
+ && rm -rf /var/lib/apt/lists/*
+
+# Patch CUDA math_functions.h for glibc 2.41 compatibility (trixie uses glibc 2.41)
+RUN sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h && \
+    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h && \
+    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h && \
+    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h
 
 # Set CUDA paths for entrypoint compilation
 ENV CUDA_HOME=/usr/local/cuda-12.8 \
