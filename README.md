@@ -9,9 +9,9 @@
 
 
 [github-release-shield]: https://img.shields.io/github/v/release/clsferguson/ComfyUI-Docker?style=flat&sort=semver
-[github-release-link]: https://github.com/clsferguson/ComfyUI-Docker/releases
-[github-license-shield]: https://img.shields.io/github/license/clsferguson/ComfyUI-Docker.svg
-[github-license-link]: https://github.com/clsferguson/ComfyUI-Docker/blob/master/LICENSE
+[github-release-link]: https://github.com/RebelSoftware/ComfyUI-Docker/releases
+[github-license-shield]: https://img.shields.io/github/license/RebelSoftware/ComfyUI-Docker.svg
+[github-license-link]: https://github.com/RebelSoftware/ComfyUI-Docker/blob/master/LICENSE
 
 [About](#about) • [Features](#features) • [Getting Started](#getting-started) • [Usage](#usage) • [License](#license)
 
