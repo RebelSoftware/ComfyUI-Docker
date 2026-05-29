@@ -13,9 +13,9 @@ SAGE_ATTENTION_BUILT_FLAG="$SAGE_ATTENTION_DIR/.built"
 PERMISSIONS_SET_FLAG="$BASE_DIR/.permissions_set"
 FIRST_RUN_FLAG="$BASE_DIR/.first_run_done"
 
-# Manager config (persistent)
+# Manager config (persistent) - use new location, not legacy default/ComfyUI-Manager
 USER_DIR="$BASE_DIR/user"
-CM_CFG_DIR="$USER_DIR/default/ComfyUI-Manager"
+CM_CFG_DIR="$USER_DIR/__manager"
 CM_CFG="$CM_CFG_DIR/config.ini"
 CM_SEEDED_FLAG="$CM_CFG_DIR/.config_seeded"
 
@@ -159,6 +159,11 @@ setup_sage_attention() {
 
 # --- ComfyUI-Manager config from CM_* env ---
 configure_manager_config() {
+    # Skip if already properly seeded and no CM_* env vars changed
+    if [ -f "$CM_SEEDED_FLAG" ] && [ -f "$CM_CFG" ]; then
+        return 0
+    fi
+    
 python - "$CM_CFG" "$CM_SEEDED_FLAG" <<'PY'
 import os, sys, configparser, pathlib
 cfg_path = pathlib.Path(sys.argv[1])
@@ -259,6 +264,10 @@ fi
 
 # --- From here on, running as $APP_USER ---
 
+# --- Git configuration (prevent permission warnings) ---
+export GIT_CONFIG_GLOBAL="/home/${APP_USER}/.gitconfig"
+git config --global core.safecround.mode=false 2>/dev/null || true
+
 # --- SageAttention setup ---
 setup_sage_attention
 
@@ -272,6 +281,9 @@ elif [ ! -d "$CUSTOM_NODES_DIR/ComfyUI-Manager" ]; then
     log "Installing ComfyUI-Manager"
     git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git "$CUSTOM_NODES_DIR/ComfyUI-Manager" || true
 fi
+
+# Ensure manager config directory exists
+mkdir -p "$CM_CFG_DIR"
 
 # --- first-run install of custom_nodes ---
 if [ ! -f "$FIRST_RUN_FLAG" ] || [ "${COMFY_FORCE_INSTALL:-0}" = "1" ]; then
