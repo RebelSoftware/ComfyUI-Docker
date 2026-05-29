@@ -3,12 +3,11 @@
 # ComfyUI-Docker
 **An automated Repo for ComfyUI Docker image builds, optimized for NVIDIA GPUs.**
 
-[![][github-stargazers-shield]][github-stargazers-link]
+
 [![][github-release-shield]][github-release-link]
 [![][github-license-shield]][github-license-link]
 
-[github-stargazers-shield]: https://img.shields.io/github/stars/clsferguson/ComfyUI-Docker.svg
-[github-stargazers-link]: https://github.com/clsferguson/ComfyUI-Docker/stargazers
+
 [github-release-shield]: https://img.shields.io/github/v/release/clsferguson/ComfyUI-Docker?style=flat&sort=semver
 [github-release-link]: https://github.com/clsferguson/ComfyUI-Docker/releases
 [github-license-shield]: https://img.shields.io/github/license/clsferguson/ComfyUI-Docker.svg
@@ -40,9 +39,6 @@ The base image is python:3.12-slim (Debian trixie) with CUDA 13.2 developer libr
 ## Getting Started
 - Install NVIDIA Container Toolkit on the host, then use docker run --gpus all or Compose GPU reservations to pass GPUs through.
 - Expose the ComfyUI server on port 8188 (default) and map volumes for models, inputs, outputs, and custom_nodes.
-
-### Pulling the Image
-The latest image is available on GHCR:
 
 
 ### Docker Compose
