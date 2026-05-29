@@ -37,33 +37,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ninja-build \
     patch \
     pkg-config \
-    libcairo2-dev \
- && echo "deb [trusted=yes] https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/ /" > /etc/apt/sources.list.d/cuda.list \
+    libcairo2-dev
+
+ RUN echo "deb [trusted=yes] https://developer.download.nvidia.com/compute/cuda/repos/debian13/x86_64/ /" > /etc/apt/sources.list.d/cuda.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-    cuda-nvcc-12-8 \
-    cuda-cudart-dev-12-8 \
-    libcusparse-dev-12-8 \
-    libcublas-dev-12-8 \
-    libcurand-dev-12-8 \
-    libcusolver-dev-12-8 \
-    libcufft-dev-12-8 \
+    cuda-nvcc-13-2 \ 
+    cuda-cudart-dev-13-2 \
+    libcusparse-dev-13-2 \
+    libcublas-dev-13-2 \
+    libcurand-dev-13-2 \
+    libcusolver-dev-13-2 \
+    libcufft-dev-13-2 \
     nvidia-smi \
  && rm -rf /var/lib/apt/lists/*
 
 # Patch CUDA math_functions.h for glibc 2.41 compatibility (trixie uses glibc 2.41)
-RUN sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h && \
-    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h && \
-    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h && \
-    sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x) noexcept (true);/' /usr/local/cuda-12.8/include/crt/math_functions.h
+# RUN sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 sinpi(double x) noexcept (true);/' /usr/local/cuda-13.2/include/crt/math_functions.h && \
+#     sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  sinpif(float x) noexcept (true);/' /usr/local/cuda-13.2/include/crt/math_functions.h && \
+#     sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ double                 cospi(double x) noexcept (true);/' /usr/local/cuda-13.2/include/crt/math_functions.h && \
+#     sed -i 's/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x);/extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  cospif(float x) noexcept (true);/' /usr/local/cuda-13.2/include/crt/math_functions.h
 
 # Set CUDA paths for entrypoint compilation
-ENV CUDA_HOME=/usr/local/cuda-12.8 \
-    PATH=/usr/local/cuda-12.8/bin:${PATH} \
-    LD_LIBRARY_PATH=/usr/local/cuda-12.8/lib64
+ENV CUDA_HOME=/usr/local/cuda-13.2 \
+    PATH=/usr/local/cuda-13.2/bin:${PATH} \
+    LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64
 
 # Create symlink for compatibility
-RUN ln -sf /usr/local/cuda-12.8 /usr/local/cuda
+RUN ln -sf /usr/local/cuda-13.2 /usr/local/cuda
 
 # Create runtime user/group
 RUN set -e; \
@@ -88,13 +89,18 @@ WORKDIR /app/ComfyUI
 # Copy requirements with optional handling
 COPY requirements.txt* ./
 
-# Core Python deps (torch CUDA 12.8, pin Triton, plus common deps)
+# Core Python deps (torch CUDA 13.0 wheels, CUDA 13.2 runtime from toolkit packages)
 RUN python -m pip install --upgrade pip setuptools wheel \
- && python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 \
- && python -m pip install --prefer-binary cupy-cuda12x \
+ && python -m pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu130 \
+ && python -m pip install --prefer-binary cupy-cuda13x \
  && if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi \
  && python -m pip install imageio-ffmpeg "av>=14.2" nvidia-ml-py onnxruntime-gpu \
  && python -m pip install toml GitPython
+
+
+# Install SageAttention build dependencies (but don't pre-build)
+# The actual build happens at container startup via entrypoint.sh when GPU is available
+RUN pip install ninja packaging
 
 # Copy the application
 COPY . .
@@ -109,6 +115,9 @@ RUN mkdir -p /app/ComfyUI/custom_nodes \
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
  && chown appuser:appuser /app /home/appuser /entrypoint.sh
+
+# Declare persistent volumes to prevent cache/config loss between container restarts
+VOLUME ["/app/ComfyUI/user", "/app/ComfyUI/models", "/app/ComfyUI/output", "/app/ComfyUI/custom_nodes"]
 
 EXPOSE 8188
 
