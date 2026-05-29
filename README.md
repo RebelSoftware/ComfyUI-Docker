@@ -21,19 +21,16 @@
 ---
 
 ## About
-This image packages upstream [ComfyUI](https://github.com/comfyanonymous/ComfyUI) with CUDA-enabled PyTorch and an entrypoint that handles volume permissions and custom node setup.
+This image packages upstream [ComfyUI-Docker](https://github.com/clsferguson/ComfyUI-Docker) with updated nvidia drivers 13.2 at the time of writing it also resolves issues with comfyui-manager being rebuilt on every restart  
 
-The base image is python:3.12-slim (Debian trixie) with CUDA 12.8 developer libraries installed via apt and PyTorch installed from the cu128 wheel index.
+The base image is python:3.12-slim (Debian trixie) with CUDA 13.2 developer libraries installed via apt and PyTorch installed from the cu130 wheel index.
 
-It syncs with the upstream ComfyUI repository, builds a Docker image on new releases, and pushes it to GitHub Container Registry (GHCR).
-
-I created this repo for myself as a simple way to stay up to date with the latest ComfyUI versions while having an easy-to-use Docker image.
 
 ---
 
 ## Features
 - Daily checks for upstream releases, auto-merges changes, and builds/pushes Docker images.
-- CUDA-enabled PyTorch + Triton on Debian trixie with CUDA 12.8 dev libs so custom CUDA builds work at runtime.
+- CUDA-enabled PyTorch + Triton on Debian trixie with CUDA 13.2 dev libs so custom CUDA builds work at runtime.
 - Non-root runtime with PUID/PGID mapping handled by entrypoint for volume permissions.
 - ComfyUI-Manager auto-sync on startup; entrypoint scans custom_nodes and installs requirements when COMFY_AUTO_INSTALL=1.
 - SageAttention build-on-start for compatible NVIDIA GPUs (Turing/SM 7.5+); enabling is opt-in via FORCE_SAGE_ATTENTION=1.
@@ -47,14 +44,6 @@ I created this repo for myself as a simple way to stay up to date with the lates
 ### Pulling the Image
 The latest image is available on GHCR:
 
-```bash
-docker pull ghcr.io/clsferguson/comfyui-docker:latest
-```
-
-For a specific version (synced with upstream tags, starting at v0.3.59):
-```bash
-docker pull ghcr.io/clsferguson/comfyui-docker:vX.Y.Z
-```
 
 ### Docker Compose
 For easier management, use this `docker-compose.yml`:
@@ -62,7 +51,7 @@ For easier management, use this `docker-compose.yml`:
 ```yaml
 services:
   comfyui:
-    image: ghcr.io/clsferguson/comfyui-docker:latest
+    image: comfyui-cuda13:latest # Use the custom-built image with CUDA 13 support built from https://github.com/RebelSoftware/ComfyUI-Docker
     container_name: ComfyUI
     runtime: nvidia
     restart: unless-stopped
@@ -112,9 +101,6 @@ Distributed under the MIT License (same as upstream ComfyUI). See [LICENSE](LICE
 ---
 
 ## Contact
-- **Creator**: clsferguson - [GitHub](https://github.com/clsferguson)
-- **Project Link**: https://github.com/clsferguson/ComfyUI-Docker
+- **Creator**: RebelSoftware - [GitHub](https://github.com/RebelSoftware)
+- **Project Link**: https://github.com/RebelSoftware/ComfyUI-Docker
 
-<p align="center">
-  <i>Built with ❤️ for easy AI workflows.</i>
-</p>
