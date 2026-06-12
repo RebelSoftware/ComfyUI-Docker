@@ -259,6 +259,15 @@ PY
         log "User permissions already configured, skipping..."
     fi
 
+    # Always ensure the temp directory exists with correct ownership.
+    # This runs on every startup (not just first run) so that custom nodes
+    # like rgthree's image-comparer can write temporary files without
+    # permission errors. Without this, if temp is created as root between
+    # restarts it won't be fixed because the full chown above is skipped
+    # when .permissions_set already exists.
+    mkdir -p "${BASE_DIR}/temp"
+    chown "${APP_USER}:${APP_GROUP}" "${BASE_DIR}/temp"
+
     exec runuser -p -u "${APP_USER}" -- "$0" "$@"
 fi
 
