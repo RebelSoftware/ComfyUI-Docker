@@ -26,3 +26,7 @@ uv.lock
 .comfy_environment
 .history
 .bash_history_local
+
+#hide my instructions on how to merge clsferguson's updates into my fork
+#they are not relevent to anyone else.
+.github-manage.md
