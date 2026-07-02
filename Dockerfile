@@ -14,7 +14,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SAGE_ATTENTION_AVAILABLE=0 \
     COMFYUI_PATH=/app/ComfyUI \
     COMFYUI_MODEL_PATH=/app/ComfyUI/models \
-    COMFYUI_MODELS_PATH=/app/ComfyUI/models
+    COMFYUI_MODELS_PATH=/app/ComfyUI/models \
+    HF_HOME=/home/appuser/.cache/huggingface
 
 # Install system deps + CUDA toolkit
 # The NVIDIA CUDA repo key uses SHA1 which trixie's sqv rejects since 2026-02-01.
