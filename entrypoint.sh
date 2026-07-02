@@ -268,6 +268,10 @@ PY
     mkdir -p "${BASE_DIR}/temp" /home/appuser/.cache/huggingface
     chown "${APP_USER}:${APP_GROUP}" "${BASE_DIR}/temp" /home/appuser/.cache/huggingface
 
+    # Set HOME to appuser's home before dropping privileges so that
+    # tools like Git and HuggingFace resolve ~ correctly (runuser -p
+    # preserves the original HOME=/root otherwise).
+    export HOME="/home/${APP_USER}"
     exec runuser -p -u "${APP_USER}" -- "$0" "$@"
 fi
 
